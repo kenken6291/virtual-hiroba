@@ -25,11 +25,15 @@ const CFG = {
   DEFAULT_MAP_ID:     'bright',
   SITE_NAME:          'Virtual Hiroba',
   SITE_URL:           'https://kenken6291.github.io/virtual-hiroba/',
+  EXPRESSIONS:        ['normal', 'smile', 'surprised', 'troubled'], // 普通/笑った/驚いた/困った
+  MAX_FACE_LEN:       60000,   // 顔画像1枚あたりのdataURL最大長（128px JPEGで通常1万前後）
+  FACE_VER_PREFIX:    'fv_',   // スクリプトプロパティ：顔画像のバージョン（更新時刻）
 };
 
 const SHEETS = {
   USERS:   'users',
   MEMBERS: 'members',
+  FACES:   'faces',
 };
 
 function initSecret() {
@@ -166,15 +170,26 @@ function getOrCreateSheet(name, headers) {
   return sheet;
 }
 
+const USERS_HEADERS = ['userId','name','x','y','avatarColor','lastSeen','comment','commentAt','mapId','expression'];
+
 function getUsersSheet() {
-  const sheet = getOrCreateSheet(SHEETS.USERS, ['userId','name','x','y','avatarColor','lastSeen','comment','commentAt','mapId']);
-  // 既存シートに mapId 列の見出しを1回だけ追加
+  const sheet = getOrCreateSheet(SHEETS.USERS, USERS_HEADERS);
+  // 既存シートに後から増えた列（mapId / expression）の見出しを1回だけ追加
   const cache = CacheService.getScriptCache();
-  if (!cache.get('users_hdr_mapId')) {
-    if (sheet.getRange(1, 9).getValue() !== 'mapId') sheet.getRange(1, 9).setValue('mapId');
-    cache.put('users_hdr_mapId', '1', 21600);
+  if (!cache.get('users_hdr_v3')) {
+    const hdr = sheet.getRange(1, 1, 1, USERS_HEADERS.length).getValues()[0];
+    if (hdr.join() !== USERS_HEADERS.join()) sheet.getRange(1, 1, 1, USERS_HEADERS.length).setValues([USERS_HEADERS]);
+    cache.put('users_hdr_v3', '1', 21600);
   }
   return sheet;
+}
+
+function getFacesSheet() {
+  return getOrCreateSheet(SHEETS.FACES, ['userId'].concat(CFG.EXPRESSIONS).concat(['updatedAt']));
+}
+
+function validateExpression(e) {
+  return CFG.EXPRESSIONS.indexOf(e) >= 0 ? e : 'normal';
 }
 
 function getMembersSheet() {
@@ -236,6 +251,13 @@ function doPost(e) {
     // 読み取り系（ポーリング）はレート制限の対象外
     if (action === 'getUsers')    return jsonResponse(getActiveUsers(userId));
     if (action === 'getRoomLink') return jsonResponse(handleGetRoomLink(body));
+    if (action === 'getFaces')    return jsonResponse(handleGetFaces(body));
+
+    // 顔画像の保存は別枠のレート制限
+    if (action === 'saveFaces') {
+      if (!checkRateLimitKey('rl_face:' + userId, 2)) return errorResponse('リクエストが速すぎます', 429);
+      return jsonResponse(handleSaveFaces(userId, body));
+    }
 
     // 会議リンク保存は位置更新と別枠のレート制限
     if (action === 'setRoomLink') {
@@ -322,14 +344,149 @@ function handleSendComment(userId, body) {
   if (comment === null) return { ok: false, error: 'コメントが不正です' };
   const sheet = getUsersSheet();
   const data  = sheet.getDataRange().getValues();
-  const now   = new Date().toISOString();
   for (let i = 1; i < data.length; i++) {
     if (data[i][0] === userId) {
+      const expression = classifyExpression(comment);
+      const now = new Date().toISOString();
       sheet.getRange(i + 1, 7, 1, 2).setValues([[comment, now]]);
-      return { ok: true };
+      sheet.getRange(i + 1, 10).setValue(expression);
+      return { ok: true, expression };
     }
   }
   return { ok: false, error: '入室してください' };
+}
+
+// ============================================================
+// 表情判定：まずキーワード、決まらなければGeminiに判定させる
+// ============================================================
+const EXPRESSION_KEYWORDS = {
+  smile: ['笑','ｗｗ','ww','草','嬉','うれし','楽し','たのし','ありがと','感謝','やった','最高','いいね','おめでと','好き',
+          '良かった','よかった','面白','おもしろ','ははは','あはは','わーい','ナイス','素敵','すてき','かわいい','可愛','美味し','おいし',
+          '😊','😄','😆','😂','🤣','👍','❤','♪','✨','🎉'],
+  surprised: ['！？','!?','?!','？！','えっ','えー','えええ','ええっ','まじ','マジ','本当に','ほんとに','びっくり','驚','すご','すげ','うそ','嘘',
+              'なんと','なんだって','おおー','おぉ','わっ','ほんと？','信じられ','まさか','‼','!!','！！','😲','😮','😳','😱'],
+  troubled: ['困','悩','どうしよう','うーん','うーむ','難し','むずかし','疲','つかれ','残念','悲し','かなし','ごめん','すみません',
+             '申し訳','無理','ムリ','だめ','ダメ','つら','辛い','不安','心配','わからない','分からない','やばい','ヤバい','しまった',
+             'あちゃ','とほほ','はぁ','😢','😥','😰','😓','💦','😭','🙏'],
+};
+
+function classifyExpression(text) {
+  const t = String(text || '');
+  const scores = {};
+  let best = 'normal', bestScore = 0, tie = false;
+  for (const expr in EXPRESSION_KEYWORDS) {
+    let s = 0;
+    EXPRESSION_KEYWORDS[expr].forEach(k => { if (t.indexOf(k) >= 0) s++; });
+    scores[expr] = s;
+    if (s > bestScore) { best = expr; bestScore = s; tie = false; }
+    else if (s > 0 && s === bestScore) tie = true;
+  }
+  if (bestScore > 0 && !tie) return best;
+  const ai = classifyExpressionByGemini(t);
+  if (ai) return ai;
+  return bestScore > 0 ? best : 'normal';
+}
+
+function classifyExpressionByGemini(text) {
+  const apiKey = PropertiesService.getScriptProperties().getProperty(CFG.GEMINI_API_KEY_PROP);
+  if (!apiKey || !text) return null;
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+    CFG.GEMINI_MODEL + ':generateContent?key=' + apiKey;
+  const prompt =
+    '次の発言をした人の表情として最も近いものを1つ選び、その英単語だけを答えてください。\n' +
+    '選択肢: normal（普通）, smile（笑顔・嬉しい・楽しい）, surprised（驚き）, troubled（困った・悲しい・疲れた）\n' +
+    '発言: 「' + text + '」';
+  try {
+    const res = UrlFetchApp.fetch(url, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0 } }),
+      muteHttpExceptions: true,
+    });
+    if (res.getResponseCode() !== 200) {
+      console.warn('Gemini expression error:', res.getResponseCode(), res.getContentText().slice(0, 200));
+      return null;
+    }
+    const data = JSON.parse(res.getContentText());
+    const out = String(data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '').toLowerCase();
+    for (const e of ['surprised', 'troubled', 'smile', 'normal']) if (out.indexOf(e) >= 0) return e;
+    return null;
+  } catch (err) {
+    console.warn('classifyExpressionByGemini:', err);
+    return null;
+  }
+}
+
+// ============================================================
+// ACTION: saveFaces / getFaces（表情ごとの顔画像）
+// ============================================================
+function validateFaceData(v) {
+  if (v === '' || v === null) return '';
+  const s = String(v);
+  if (s.length > CFG.MAX_FACE_LEN) return undefined;
+  if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(s)) return undefined;
+  return s;
+}
+
+function handleSaveFaces(userId, body) {
+  const faces = body.faces;
+  if (!faces || typeof faces !== 'object') return { ok: false, error: '顔データがありません' };
+  const updates = {};
+  for (const expr of CFG.EXPRESSIONS) {
+    if (!(expr in faces)) continue;
+    const v = validateFaceData(faces[expr]);
+    if (v === undefined) return { ok: false, error: '画像の形式またはサイズが不正です（' + expr + '）' };
+    updates[expr] = v;
+  }
+  if (!Object.keys(updates).length) return { ok: false, error: '変更がありません' };
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const sheet = getFacesSheet();
+    const data  = sheet.getDataRange().getValues();
+    const now   = new Date().toISOString();
+    let rowIdx = -1, row = null;
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0] === userId) { rowIdx = i + 1; row = data[i]; break; }
+    }
+    if (!row) row = [userId].concat(CFG.EXPRESSIONS.map(() => '')).concat(['']);
+    CFG.EXPRESSIONS.forEach((expr, k) => { if (expr in updates) row[k + 1] = updates[expr]; });
+    row[CFG.EXPRESSIONS.length + 1] = now;
+    const hasAny = CFG.EXPRESSIONS.some((_, k) => row[k + 1]);
+
+    const props = PropertiesService.getScriptProperties();
+    if (!hasAny) {
+      if (rowIdx > 0) sheet.deleteRow(rowIdx);
+      props.deleteProperty(CFG.FACE_VER_PREFIX + userId);
+      return { ok: true, ver: '' };
+    }
+    if (rowIdx > 0) sheet.getRange(rowIdx, 1, 1, row.length).setValues([row]);
+    else            sheet.appendRow(row);
+    const ver = String(Date.now());
+    props.setProperty(CFG.FACE_VER_PREFIX + userId, ver);
+    return { ok: true, ver };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handleGetFaces(body) {
+  const ids = Array.isArray(body.userIds) ? body.userIds.slice(0, 30).map(String) : [];
+  if (!ids.length) return { ok: true, faces: {} };
+  const want  = {};
+  ids.forEach(id => want[id] = true);
+  const props = PropertiesService.getScriptProperties().getProperties();
+  const data  = getFacesSheet().getDataRange().getValues();
+  const faces = {};
+  for (let i = 1; i < data.length; i++) {
+    const uid = data[i][0];
+    if (!want[uid]) continue;
+    const f = { ver: props[CFG.FACE_VER_PREFIX + uid] || '' };
+    CFG.EXPRESSIONS.forEach((expr, k) => { f[expr] = data[i][k + 1] || ''; });
+    faces[uid] = f;
+  }
+  return { ok: true, faces };
 }
 
 // ============================================================
@@ -339,6 +496,7 @@ function getActiveUsers(requesterId) {
   const sheet = getUsersSheet();
   const data  = sheet.getDataRange().getValues();
   const now   = Date.now();
+  const props = PropertiesService.getScriptProperties().getProperties();
   const users = [];
   for (let i = 1; i < data.length; i++) {
     if (now - new Date(data[i][5]).getTime() < CFG.SESSION_TIMEOUT_MS) {
@@ -354,6 +512,8 @@ function getActiveUsers(requesterId) {
         comment:     fresh ? data[i][6] : '',
         commentAt:   fresh ? new Date(data[i][7]).toISOString() : '',
         mapId:       validateMapId(data[i][8]),
+        expression:  fresh ? validateExpression(data[i][9]) : 'normal',
+        faceVer:     props[CFG.FACE_VER_PREFIX + data[i][0]] || '',
       });
     }
   }

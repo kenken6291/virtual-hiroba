@@ -672,6 +672,60 @@ body {
   #room-badge { top: 10px; bottom: auto; left: 10px; }
   #room-panel { top: 62px; bottom: auto; right: 10px; }
 }
+
+/* ════════════════════════════════════════
+   顔の登録
+════════════════════════════════════════ */
+.btn.sub {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--text);
+  margin-bottom: 14px;
+  padding: 9px;
+  font-size: 10px;
+}
+.face-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.face-slot {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 8px 6px;
+  text-align: center;
+}
+.face-thumb {
+  width: 64px; height: 64px;
+  margin: 0 auto 6px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #1a1a3a;
+  border: 2px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+}
+.face-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.face-thumb span { font-size: 28px; opacity: .55; }
+.face-label { font-size: 10px; margin-bottom: 6px; }
+.face-label em {
+  font-style: normal; font-size: 8px; color: var(--yellow);
+  border: 1px solid var(--yellow); padding: 0 3px; margin-left: 4px;
+}
+.face-btns { display: flex; gap: 4px; justify-content: center; }
+.face-btns button {
+  background: var(--border); border: 1px solid #3a3a70; color: var(--text);
+  font-family: inherit; font-size: 9px; padding: 5px 6px; cursor: pointer;
+}
+.face-btns .face-del { color: var(--red); }
+#face-cropper { text-align: center; }
+#crop-title { font-size: 9px; color: var(--dim); margin-bottom: 8px; line-height: 1.5; }
+#crop-canvas {
+  width: 100%; max-width: 240px; aspect-ratio: 1;
+  background: #000; touch-action: none; cursor: grab; display: block; margin: 0 auto 10px;
+}
+#crop-zoom { width: 100%; margin-bottom: 10px; accent-color: var(--accent); }
+.modal { max-height: calc(100dvh - 32px); overflow-y: auto; }
 </style>
 </head>
 <body>
@@ -744,10 +798,31 @@ body {
         <input id="nick-edit-input" type="text" maxlength="16" placeholder="新しいニックネーム" autocomplete="off">
         <button class="btn" id="nick-edit-save" style="margin-bottom:0;">保存</button>
       </div>
+      <button class="btn sub" id="face-edit-btn">😊 顔（表情）を登録する</button>
       <label>アバターカラー</label>
       <div class="color-row" id="color-row"></div>
       <button class="btn" id="enter-btn">▶ 入室する</button>
       <span class="auth-link" id="logout-link">ログアウト</span>
+    </div>
+
+    <!-- 顔（表情）の登録 -->
+    <div class="auth-view" data-view="faces">
+      <div id="face-main">
+        <div class="auth-msg" id="face-msg">4つの表情の写真を登録すると、話した内容に合わせて顔が変わります。普通の顔だけでもOKです。</div>
+        <div class="face-grid" id="face-grid"></div>
+        <button class="btn" id="face-save" disabled>💾 保存する</button>
+        <span class="auth-link" id="face-back">戻る</span>
+      </div>
+      <div id="face-cropper" style="display:none">
+        <div id="crop-title"></div>
+        <canvas id="crop-canvas" width="240" height="240"></canvas>
+        <input type="range" id="crop-zoom" min="1" max="4" step="0.01" value="1">
+        <div class="rp-row">
+          <button class="rp-btn close" id="crop-cancel">やめる</button>
+          <button class="rp-btn save" id="crop-ok">決定</button>
+        </div>
+      </div>
+      <input type="file" id="face-file" accept="image/*" style="display:none">
     </div>
   </div>
 </div>
@@ -1065,7 +1140,7 @@ function switchMap(id) {
     myX = sp.x; myY = sp.y;
   }
   document.getElementById('st-pos').textContent = `${myX},${myY}`;
-  myComment = ''; myCommentAt = 0; // 前のマップの吹き出しは持ち越さない
+  myComment = ''; myCommentAt = 0; myExpr = 'normal'; // 前のマップの吹き出しは持ち越さない
   if (currentRoom) exitRoom();
   updateRoomState();
   updatePlayersList();
@@ -1081,6 +1156,7 @@ let myName = 'ゲスト', myColor = AVATAR_COLORS[0];
 let myX = 3, myY = 3;
 let otherUsers = {};
 let myComment = '', myCommentAt = 0; // 自分の吹き出し（楽観表示用）
+let myExpr = 'normal';                 // 自分の表情（コメント内容から判定）
 
 // ============================================================
 // API ヘルパー
@@ -1176,13 +1252,31 @@ window.addEventListener('resize', () => { resizeCanvas(); });
 // 描画
 // ============================================================
 function getCam() {
+  const a = anim.self;
+  const cx = a ? a.x : myX, cy = a ? a.y : myY;
   return {
-    ox: canvas.width  / 2 - myX * TILE - TILE / 2,
-    oy: canvas.height / 2 - myY * TILE - TILE / 2,
+    ox: Math.round(canvas.width  / 2 - cx * TILE - TILE / 2),
+    oy: Math.round(canvas.height / 2 - cy * TILE - TILE / 2),
   };
 }
 
+let lastFrameAt = performance.now();
+function exprOf(comment, commentAt, expression) {
+  return (comment && commentAt && Date.now() - commentAt < COMMENT_TTL_MS) ? (expression || 'normal') : 'normal';
+}
+
 function drawFrame() {
+  const nowT = performance.now();
+  const dt = Math.min(0.1, (nowT - lastFrameAt) / 1000);
+  lastFrameAt = nowT;
+  // 表示位置を目標へ近づける（歩きアニメーション）
+  const selfA = animStep('self', myX, myY, dt);
+  setAnimExpr('self', exprOf(myComment, myCommentAt, myExpr));
+  for (const [uid, u] of Object.entries(otherUsers)) {
+    if (u.mapId !== currentMapId) continue;
+    animStep(uid, u.x, u.y, dt);
+    setAnimExpr(uid, exprOf(u.comment, u.commentAt, u.expression));
+  }
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const { ox, oy } = getCam();
   const th  = theme();
@@ -1219,11 +1313,17 @@ function drawFrame() {
     ctx.fillText(r.name, cx2, topY-4);
   }
 
-  for (const u of Object.values(otherUsers)) {
-    if (u.mapId !== currentMapId) continue; // 別マップの人は表示しない
-    drawAvatar(u.x*TILE+ox, u.y*TILE+oy, u.avatarColor, u.name, false);
+  // 奥（上）にいる人から順に描いて重なりを自然に
+  const list = Object.entries(otherUsers)
+    .filter(([, u]) => u.mapId === currentMapId)   // 別マップの人は表示しない
+    .map(([uid, u]) => ({ uid, u, a: anim[uid] }));
+  list.push({ uid: 'self', self: true, a: selfA });
+  list.sort((p, q) => p.a.y - q.a.y);
+  for (const it of list) {
+    const px = Math.round(it.a.x * TILE + ox), py = Math.round(it.a.y * TILE + oy);
+    if (it.self) drawAvatar(px, py, myColor, myName, true, myId, it.a.expr, it.a);
+    else         drawAvatar(px, py, it.u.avatarColor ?? '#888', it.u.name, false, it.uid, it.a.expr, it.a);
   }
-  drawAvatar(myX*TILE+ox, myY*TILE+oy, myColor, myName, true);
 
   updateBubbles(ox, oy);
   requestAnimationFrame(drawFrame);
@@ -1352,9 +1452,10 @@ function updateBubbles(ox, oy) {
       bubbleEls[key] = el;
     }
     if (el.textContent !== text) el.textContent = text;
-    const sx = x * TILE + ox, sy = y * TILE + oy;
+    const a = anim[key];
+    const sx = (a ? a.x : x) * TILE + ox, sy = (a ? a.y : y) * TILE + oy;
     el.style.left = (sx + TILE / 2) + 'px';
-    el.style.top  = (sy - 8) + 'px';
+    el.style.top  = (sy - 12) + 'px'; // 頭（顔）にかからない高さ
     el.style.transform = 'translate(-50%, -100%)';
   }
 
@@ -1369,26 +1470,6 @@ function updateBubbles(ox, oy) {
   }
 }
 
-function drawAvatar(sx, sy, color, name, isMe) {
-  const s = TILE;
-  ctx.fillStyle='rgba(0,0,0,.3)'; ctx.fillRect(sx+4,sy+s-5,s-8,4);
-  ctx.fillStyle = isMe ? brighten(color,30) : color;
-  ctx.fillRect(sx+8,sy+14,s-16,12); ctx.fillRect(sx+4,sy+26,6,6);
-  ctx.fillRect(sx+s-10,sy+26,6,6); ctx.fillRect(sx+2,sy+14,5,10);
-  ctx.fillRect(sx+s-7,sy+14,5,10);
-  ctx.fillStyle='#f5c6a0'; ctx.fillRect(sx+8,sy+4,s-16,12);
-  ctx.fillStyle=darken(color,40); ctx.fillRect(sx+8,sy+4,s-16,4); ctx.fillRect(sx+6,sy+6,3,6);
-  ctx.fillStyle='#1a1a2e'; ctx.fillRect(sx+11,sy+9,2,3); ctx.fillRect(sx+s-13,sy+9,2,3);
-  const th = theme();
-  if (isMe) {
-    ctx.fillStyle = th.markerColor;
-    ctx.beginPath(); ctx.moveTo(sx+s/2,sy-8); ctx.lineTo(sx+s/2-4,sy-2); ctx.lineTo(sx+s/2+4,sy-2);
-    ctx.closePath(); ctx.fill();
-  }
-  ctx.font='7px "Courier New"'; ctx.textAlign='center';
-  ctx.fillStyle = th.nameShadow; ctx.fillText(name,sx+s/2+1,sy+s-1);
-  ctx.fillStyle = isMe ? th.meNameColor : th.nameColor; ctx.fillText(name,sx+s/2,sy+s-2);
-}
 function brighten(hex,a){return shiftHex(hex,a);}
 function darken(hex,a){return shiftHex(hex,-a);}
 function shiftHex(hex,a){
@@ -1646,6 +1727,7 @@ async function pollUsers() {
   try {
     const res = await apiGet({ action:'getUsers' });
     if (!res.ok || !polling) return;
+    syncFaces(res.users);
     otherUsers = {};
     let cnt = 0;
     for (const u of res.users) {
@@ -1653,6 +1735,7 @@ async function pollUsers() {
       u.commentAt = u.commentAt ? new Date(u.commentAt).getTime() : 0;
       u.comment   = u.comment || '';
       u.mapId     = THEMES[u.mapId] ? u.mapId : 'bright';
+      u.expression = u.expression || 'normal';
       otherUsers[u.userId] = u; cnt++;
     }
     const here = Object.values(otherUsers).filter(u => u.mapId === currentMapId).length + 1;
@@ -1667,6 +1750,411 @@ async function pollUsers() {
 function dist2D(a,b) { return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2); }
 
 // ============================================================
+// 顔（表情）システム
+//   4つの表情の顔写真を登録 → アバターの頭に表示。
+//   コメントの内容から表情を判定（サーバー側でキーワード＋Gemini）。
+// ============================================================
+const EXPRS = [
+  { id:'normal',    label:'普通の顔',   emoji:'🙂' },
+  { id:'smile',     label:'笑った顔',   emoji:'😊' },
+  { id:'surprised', label:'驚いた顔',   emoji:'😲' },
+  { id:'troubled',  label:'困った顔',   emoji:'😥' },
+];
+const EXPR_EMOJI = Object.fromEntries(EXPRS.map(e => [e.id, e.emoji]));
+const FACE_OUT_SIZE = 128;
+
+// 顔画像キャッシュ { userId: { ver, img: { normal: Image, ... } } }
+const faceStore = {};
+const faceLoading = new Set();
+
+function buildFaceImages(f) {
+  const img = {};
+  for (const e of EXPRS) {
+    if (!f[e.id]) continue;
+    const im = new Image();
+    im.src = f[e.id];
+    img[e.id] = im;
+  }
+  return img;
+}
+
+async function loadFaces(userIds) {
+  const ids = userIds.filter(id => id && !faceLoading.has(id));
+  if (!ids.length) return;
+  ids.forEach(id => faceLoading.add(id));
+  try {
+    const res = await apiPost({ action:'getFaces', userIds: ids });
+    if (!res.ok) return;
+    for (const id of ids) {
+      const f = res.faces?.[id];
+      if (f && f.ver) faceStore[id] = { ver: f.ver, raw: f, img: buildFaceImages(f) };
+      else delete faceStore[id];
+    }
+  } catch (e) { console.warn('loadFaces', e); }
+  finally { ids.forEach(id => faceLoading.delete(id)); }
+}
+
+// ポーリング結果から、顔が更新された人だけ取りに行く
+function syncFaces(users) {
+  const need = [];
+  for (const u of users) {
+    const cur = faceStore[u.userId];
+    if (!u.faceVer) { if (cur) delete faceStore[u.userId]; continue; }
+    if (!cur || cur.ver !== u.faceVer) need.push(u.userId);
+  }
+  if (need.length) loadFaces(need);
+}
+
+// 表示用の顔画像（その表情が無ければ普通の顔）
+function faceImageFor(uid, expr) {
+  const f = faceStore[uid];
+  if (!f) return { img: null, exact: false };
+  const im = f.img[expr];
+  if (im && im.complete && im.naturalWidth) return { img: im, exact: true };
+  const n = f.img.normal;
+  if (n && n.complete && n.naturalWidth) return { img: n, exact: expr === 'normal' };
+  // 普通の顔が無い場合は登録されている他の顔で代用
+  for (const e of EXPRS) {
+    const o = f.img[e.id];
+    if (o && o.complete && o.naturalWidth) return { img: o, exact: false };
+  }
+  return { img: null, exact: false };
+}
+
+// ── 送信前に手元ですぐ表情を出すための簡易判定（最終的な表情はサーバーの判定） ──
+const LOCAL_EXPR_WORDS = {
+  smile:     ['笑','ww','ｗｗ','草','嬉','うれし','楽し','たのし','ありがと','やった','最高','いいね','おめでと','良かった','よかった','面白','おもしろ','😊','😄','😂','👍','♪'],
+  surprised: ['!?','！？','?!','？！','えっ','えー','まじ','マジ','びっくり','驚','すご','すげ','うそ','嘘','まさか','!!','！！','😲','😮','😱'],
+  troubled:  ['困','悩','どうしよう','うーん','難し','むずかし','疲','つかれ','残念','悲し','ごめん','すみません','無理','ムリ','だめ','ダメ','不安','心配','😢','😥','💦','😭'],
+};
+function guessExpressionLocal(text) {
+  let best = 'normal', bestScore = 0;
+  for (const [e, words] of Object.entries(LOCAL_EXPR_WORDS)) {
+    const s = words.filter(w => text.includes(w)).length;
+    if (s > bestScore) { best = e; bestScore = s; }
+  }
+  return best;
+}
+
+// ============================================================
+// 表示位置のなめらか移動・歩きアニメーション
+// ============================================================
+const anim = {}; // key: 'self' or userId → { x, y, phase, moving, expr, exprAt }
+const WALK_SPEED = 9; // タイル/秒
+
+function animStep(key, tx, ty, dt) {
+  let a = anim[key];
+  if (!a) { a = anim[key] = { x: tx, y: ty, phase: 0, moving: false, expr: 'normal', exprAt: 0 }; }
+  const dx = tx - a.x, dy = ty - a.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist > 4) { a.x = tx; a.y = ty; a.moving = false; return a; } // ワープ（マップ切替など）
+  if (dist > 0.001) {
+    const step = Math.min(dist, WALK_SPEED * dt);
+    a.x += dx / dist * step;
+    a.y += dy / dist * step;
+    a.moving = true;
+    a.phase += dt * 14;
+    if (dx !== 0) a.facing = dx > 0 ? 1 : -1;
+  } else {
+    a.x = tx; a.y = ty;
+    a.moving = false;
+  }
+  return a;
+}
+
+function setAnimExpr(key, expr) {
+  const a = anim[key];
+  if (!a) return;
+  if (a.expr !== expr) { a.expr = expr; a.exprAt = performance.now(); }
+}
+
+// ============================================================
+// アバター描画（体＋顔）
+// ============================================================
+function drawAvatar(sx, sy, color, name, isMe, uid, expr, a) {
+  const s = TILE;
+  const th = theme();
+  const moving = a?.moving;
+  const phase  = a?.phase ?? 0;
+  const swing  = moving ? Math.sin(phase) : 0;
+  const bob    = moving ? Math.abs(Math.sin(phase)) * -2 : 0;
+
+  // 表情が変わった直後のリアクション（驚き：ジャンプ / その他：ぽよん）
+  const age = a ? (performance.now() - a.exprAt) : 9999;
+  let pop = 1, jump = 0;
+  if (age < 450 && expr !== 'normal') {
+    const t = age / 450;
+    if (expr === 'surprised') jump = -6 * Math.sin(Math.PI * t);
+    pop = 1 + 0.22 * Math.sin(Math.PI * t);
+  }
+  const by = sy + bob + jump;
+
+  // 影
+  ctx.fillStyle = 'rgba(0,0,0,.28)';
+  ctx.beginPath(); ctx.ellipse(sx + s/2, sy + s - 3, 9, 3, 0, 0, Math.PI*2); ctx.fill();
+
+  // 足（歩くと交互に動く）
+  const body = isMe ? brighten(color, 25) : color;
+  ctx.fillStyle = darken(color, 50);
+  ctx.fillRect(sx + 10, by + 25 + Math.max(0,  swing) * -3, 5, 6);
+  ctx.fillRect(sx + 17, by + 25 + Math.max(0, -swing) * -3, 5, 6);
+  // 胴体
+  ctx.fillStyle = body;
+  ctx.fillRect(sx + 9, by + 16, 14, 11);
+  // 腕（歩くと振る）
+  ctx.fillRect(sx + 5,  by + 17 + swing * 2, 4, 8);
+  ctx.fillRect(sx + 23, by + 17 - swing * 2, 4, 8);
+
+  // 頭（顔写真 or ドット絵の顔）
+  const hx = sx + s/2, hy = by + 7;
+  const r  = 12 * pop;   // 顔がわかるよう頭は少し大きめ（タイルの上にはみ出してOK）
+  const { img, exact } = uid ? faceImageFor(uid, expr) : { img: null, exact: false };
+  if (img) {
+    ctx.save();
+    ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI*2); ctx.closePath(); ctx.clip();
+    ctx.drawImage(img, hx - r, hy - r, r*2, r*2);
+    ctx.restore();
+    ctx.strokeStyle = body; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI*2); ctx.stroke();
+    // その表情の写真が無いときは絵文字で表情を補う
+    if (!exact && expr !== 'normal') {
+      ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(EXPR_EMOJI[expr], hx + r, hy - r + 4);
+    }
+  } else {
+    drawPixelFace(hx, hy, r, color, expr);
+  }
+
+  // 自分の目印
+  if (isMe) {
+    const my = hy - r - 4;
+    ctx.fillStyle = th.markerColor;
+    ctx.beginPath(); ctx.moveTo(hx, my); ctx.lineTo(hx - 4, my - 6); ctx.lineTo(hx + 4, my - 6);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // 名前
+  ctx.font = '7px "Courier New"'; ctx.textAlign = 'center';
+  ctx.fillStyle = th.nameShadow; ctx.fillText(name, sx + s/2 + 1, sy + s + 7);
+  ctx.fillStyle = isMe ? th.meNameColor : th.nameColor; ctx.fillText(name, sx + s/2, sy + s + 6);
+}
+
+// 顔写真が無い人用：表情つきの丸い顔
+function drawPixelFace(hx, hy, r, color, expr) {
+  ctx.fillStyle = '#f5c6a0';
+  ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI*2); ctx.fill();
+  // 髪
+  ctx.fillStyle = darken(color, 40);
+  ctx.beginPath(); ctx.arc(hx, hy, r, Math.PI * 1.08, Math.PI * 1.92); ctx.lineTo(hx, hy - r * 0.35); ctx.closePath(); ctx.fill();
+
+  const ex = r * 0.38, ey = hy - r * 0.05;
+  ctx.fillStyle = '#1a1a2e'; ctx.strokeStyle = '#1a1a2e'; ctx.lineWidth = 1.4; ctx.lineCap = 'round';
+  const line = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+  const arc  = (x, y, rr, a1, a2) => { ctx.beginPath(); ctx.arc(x, y, rr, a1, a2); ctx.stroke(); };
+  const dot  = (x, y, rr) => { ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI*2); ctx.fill(); };
+
+  switch (expr) {
+    case 'smile':
+      arc(hx - ex, ey + 1, 1.8, Math.PI * 1.1, Math.PI * 1.9);   // ^ ^
+      arc(hx + ex, ey + 1, 1.8, Math.PI * 1.1, Math.PI * 1.9);
+      ctx.fillStyle = '#c0392b';
+      ctx.beginPath(); ctx.arc(hx, hy + r * 0.35, r * 0.3, 0, Math.PI); ctx.fill();
+      ctx.fillStyle = 'rgba(255,120,120,.45)';
+      dot(hx - r * 0.6, hy + r * 0.3, 1.8); dot(hx + r * 0.6, hy + r * 0.3, 1.8);
+      break;
+    case 'surprised':
+      ctx.fillStyle = '#fff'; dot(hx - ex, ey, 2.4); dot(hx + ex, ey, 2.4);
+      ctx.fillStyle = '#1a1a2e'; dot(hx - ex, ey, 1.2); dot(hx + ex, ey, 1.2);
+      line(hx - ex - 2, ey - 4, hx - ex + 2, ey - 4.5); line(hx + ex - 2, ey - 4.5, hx + ex + 2, ey - 4);
+      ctx.beginPath(); ctx.ellipse(hx, hy + r * 0.45, 1.8, 2.4, 0, 0, Math.PI*2); ctx.fill();
+      break;
+    case 'troubled':
+      dot(hx - ex, ey + 0.5, 1.1); dot(hx + ex, ey + 0.5, 1.1);
+      line(hx - ex - 2, ey - 3, hx - ex + 2, ey - 4.5); line(hx + ex - 2, ey - 4.5, hx + ex + 2, ey - 3); // ハの字眉
+      arc(hx, hy + r * 0.62, r * 0.25, Math.PI * 1.15, Math.PI * 1.85);                                // への字口
+      ctx.fillStyle = '#6ec6ff';                                                                           // 汗
+      ctx.beginPath(); ctx.moveTo(hx + r * 0.85, hy - r * 0.55); ctx.lineTo(hx + r * 0.7, hy - r * 0.25);
+      ctx.arc(hx + r * 0.85, hy - r * 0.25, 1.8, Math.PI, 0, true); ctx.closePath(); ctx.fill();
+      break;
+    default:
+      dot(hx - ex, ey, 1.2); dot(hx + ex, ey, 1.2);
+      line(hx - 2, hy + r * 0.45, hx + 2, hy + r * 0.45);
+  }
+}
+
+// ============================================================
+// 顔の登録画面
+// ============================================================
+let faceDraft = {};       // { expr: dataURL or '' }
+let faceChanged = new Set();
+let cropTarget = null;    // 編集中の表情
+let cropImg = null, cropZoom = 1, cropPanX = 0, cropPanY = 0;
+
+function renderFaceGrid() {
+  const grid = document.getElementById('face-grid');
+  grid.innerHTML = '';
+  for (const e of EXPRS) {
+    const slot = document.createElement('div');
+    slot.className = 'face-slot';
+    const has = !!faceDraft[e.id];
+    slot.innerHTML = `
+      <div class="face-thumb">${has ? `<img src="${faceDraft[e.id]}" alt="">` : `<span>${e.emoji}</span>`}</div>
+      <div class="face-label">${e.label}${e.id === 'normal' ? '<em>基本</em>' : ''}</div>
+      <div class="face-btns">
+        <button type="button" class="face-pick">📷 ${has ? '変更' : '登録'}</button>
+        ${has ? '<button type="button" class="face-del">削除</button>' : ''}
+      </div>`;
+    slot.querySelector('.face-pick').addEventListener('click', () => pickFace(e.id));
+    slot.querySelector('.face-del')?.addEventListener('click', () => {
+      faceDraft[e.id] = ''; faceChanged.add(e.id); renderFaceGrid();
+    });
+    grid.appendChild(slot);
+  }
+  document.getElementById('face-save').disabled = faceChanged.size === 0;
+}
+
+async function openFaceEditor() {
+  if (!myToken || !myId) { toast('ログインしてください'); return; }
+  showAuthView('faces');
+  faceDraft = {}; faceChanged = new Set();
+  closeCropper();
+  const mine = faceStore[myId];
+  if (mine) EXPRS.forEach(e => faceDraft[e.id] = mine.raw[e.id] || '');
+  renderFaceGrid();
+  if (!mine) {
+    document.getElementById('face-msg').textContent = '読み込み中...';
+    await loadFaces([myId]);
+    const f = faceStore[myId];
+    if (f && faceChanged.size === 0) EXPRS.forEach(e => faceDraft[e.id] = f.raw[e.id] || '');
+    document.getElementById('face-msg').textContent = '4つの表情の写真を登録すると、話した内容に合わせて顔が変わります。普通の顔だけでもOKです。';
+    renderFaceGrid();
+  }
+}
+
+function pickFace(expr) {
+  cropTarget = expr;
+  const input = document.getElementById('face-file');
+  input.value = '';
+  input.click();
+}
+
+document.getElementById('face-file').addEventListener('change', (ev) => {
+  const file = ev.target.files?.[0];
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { toast('画像ファイルを選んでください'); return; }
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => { cropImg = im; cropZoom = 1; cropPanX = 0; cropPanY = 0; openCropper(); URL.revokeObjectURL(url); };
+  im.onerror = () => { toast('画像を読み込めませんでした'); URL.revokeObjectURL(url); };
+  im.src = url;
+});
+
+const cropCanvas = document.getElementById('crop-canvas');
+const cropCtx = cropCanvas.getContext('2d');
+
+function openCropper() {
+  const e = EXPRS.find(x => x.id === cropTarget);
+  document.getElementById('crop-title').textContent = `${e.emoji} ${e.label}：ドラッグで位置、スライダーで大きさを調整`;
+  document.getElementById('crop-zoom').value = 1;
+  document.getElementById('face-cropper').style.display = 'block';
+  document.getElementById('face-main').style.display = 'none';
+  drawCrop();
+}
+function closeCropper() {
+  document.getElementById('face-cropper').style.display = 'none';
+  document.getElementById('face-main').style.display = 'block';
+  cropImg = null;
+}
+
+// 画像の描画位置。パンとはみ出し制限は切り抜き画面(S)の座標で計算し、出力サイズに合わせて縮める
+function cropRect(size) {
+  const S = cropCanvas.width;
+  const base = Math.max(S / cropImg.naturalWidth, S / cropImg.naturalHeight);
+  const w = cropImg.naturalWidth * base * cropZoom, h = cropImg.naturalHeight * base * cropZoom;
+  const maxX = (w - S) / 2, maxY = (h - S) / 2;   // 円の中が常に画像で埋まるように制限
+  cropPanX = Math.max(-maxX, Math.min(maxX, cropPanX));
+  cropPanY = Math.max(-maxY, Math.min(maxY, cropPanY));
+  const k = size / S;
+  return { x: ((S - w) / 2 + cropPanX) * k, y: ((S - h) / 2 + cropPanY) * k, w: w * k, h: h * k };
+}
+
+function drawCrop() {
+  if (!cropImg) return;
+  const S = cropCanvas.width;
+  cropCtx.clearRect(0, 0, S, S);
+  const r = cropRect(S);
+  cropCtx.drawImage(cropImg, r.x, r.y, r.w, r.h);
+  // 円の外側を暗く
+  cropCtx.save();
+  cropCtx.fillStyle = 'rgba(0,0,0,.55)';
+  cropCtx.beginPath(); cropCtx.rect(0, 0, S, S); cropCtx.arc(S/2, S/2, S/2 - 4, 0, Math.PI*2, true); cropCtx.fill('evenodd');
+  cropCtx.strokeStyle = '#fff'; cropCtx.lineWidth = 2;
+  cropCtx.beginPath(); cropCtx.arc(S/2, S/2, S/2 - 4, 0, Math.PI*2); cropCtx.stroke();
+  cropCtx.restore();
+}
+
+let cropDrag = null;
+cropCanvas.addEventListener('pointerdown', (e) => {
+  cropDrag = { x: e.clientX, y: e.clientY };
+  cropCanvas.setPointerCapture(e.pointerId);
+});
+cropCanvas.addEventListener('pointermove', (e) => {
+  if (!cropDrag) return;
+  const k = cropCanvas.width / cropCanvas.getBoundingClientRect().width;
+  cropPanX += (e.clientX - cropDrag.x) * k;
+  cropPanY += (e.clientY - cropDrag.y) * k;
+  cropDrag = { x: e.clientX, y: e.clientY };
+  drawCrop();
+});
+['pointerup','pointercancel'].forEach(t => cropCanvas.addEventListener(t, () => { cropDrag = null; }));
+document.getElementById('crop-zoom').addEventListener('input', (e) => { cropZoom = Number(e.target.value); drawCrop(); });
+document.getElementById('crop-cancel').addEventListener('click', closeCropper);
+document.getElementById('crop-ok').addEventListener('click', () => {
+  if (!cropImg) return;
+  const out = document.createElement('canvas');
+  out.width = out.height = FACE_OUT_SIZE;
+  const octx = out.getContext('2d');
+  octx.fillStyle = '#fff'; octx.fillRect(0, 0, FACE_OUT_SIZE, FACE_OUT_SIZE);
+  const r = cropRect(FACE_OUT_SIZE);
+  octx.drawImage(cropImg, r.x, r.y, r.w, r.h);
+  faceDraft[cropTarget] = out.toDataURL('image/jpeg', 0.82);
+  faceChanged.add(cropTarget);
+  closeCropper();
+  renderFaceGrid();
+});
+
+document.getElementById('face-save').addEventListener('click', async () => {
+  if (!faceChanged.size) return;
+  const btn = document.getElementById('face-save');
+  btn.disabled = true; btn.textContent = '保存中...';
+  const faces = {};
+  faceChanged.forEach(id => faces[id] = faceDraft[id] || '');
+  try {
+    const res = await apiPost({ action:'saveFaces', faces });
+    if (!res.ok) { toast('⚠️ ' + (res.error ?? '保存に失敗しました')); return; }
+    faceChanged.clear();
+    if (res.ver) {
+      const raw = {}; EXPRS.forEach(e => raw[e.id] = faceDraft[e.id] || '');
+      faceStore[myId] = { ver: res.ver, raw, img: buildFaceImages(raw) };
+    } else {
+      delete faceStore[myId];
+    }
+    toast('😊 顔を保存しました');
+    enterProfileView();
+  } catch (e) {
+    toast('⚠️ 保存に失敗しました');
+  } finally {
+    btn.textContent = '💾 保存する';
+    btn.disabled = faceChanged.size === 0;
+  }
+});
+document.getElementById('face-edit-btn').addEventListener('click', openFaceEditor);
+document.getElementById('face-back').addEventListener('click', () => {
+  if (faceChanged.size && !confirm('保存していない変更があります。戻りますか？')) return;
+  enterProfileView();
+});
+
+// ============================================================
 // コメント送信
 // ============================================================
 async function sendComment(text) {
@@ -1675,9 +2163,11 @@ async function sendComment(text) {
   // 自分の吹き出しは送信結果を待たずに即表示（体感速度優先）
   myComment = trimmed;
   myCommentAt = Date.now();
+  myExpr = guessExpressionLocal(trimmed); // まず手元の簡易判定ですぐ表情を変える
   try {
     const res = await apiPost({ action:'sendComment', text: trimmed });
     if (!res.ok) toast('⚠️ ' + (res.error ?? 'コメントの送信に失敗しました'));
+    else if (res.expression && myComment === trimmed) myExpr = res.expression; // サーバー（AI）の判定で上書き
   } catch(e) { console.warn('sendComment', e); }
 }
 
@@ -1818,6 +2308,8 @@ function doLeave() {
   apiPost({ action: 'leave' }).catch(() => {});
   stopPolling();
   otherUsers = {};
+  for (const k of Object.keys(anim)) delete anim[k];
+  myComment = ''; myCommentAt = 0; myExpr = 'normal';
   currentRoom = null;
   clearInterval(roomLinkPollTid);
   roomLinkPollTid = null;
@@ -1948,6 +2440,7 @@ document.getElementById('changepw-btn').addEventListener('click', async () => {
 function enterProfileView() {
   document.getElementById('profile-name').textContent = '👤 ' + myName;
   showAuthView('enter');
+  if (myId && !faceStore[myId]) loadFaces([myId]);
 }
 document.getElementById('nick-edit-link').addEventListener('click', () => {
   const box = document.getElementById('nick-edit-box');

@@ -1,0 +1,1940 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Virtual Hiroba</title>
+<style>
+/* ─── リセット & 変数 ─────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #0c0c1e;
+  --panel:   #10102a;
+  --border:  #252550;
+  --accent:  #5f5fef;
+  --accent2: #ef5fa7;
+  --green:   #3ddc84;
+  --red:     #ff4f6a;
+  --yellow:  #ffe066;
+  --text:    #d0d0f0;
+  --dim:     #555588;
+}
+
+body {
+  font-family: 'Courier New', monospace;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  user-select: none;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  touch-action: none;
+}
+
+/* ════════════════════════════════════════
+   HEADER
+════════════════════════════════════════ */
+#header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  background: var(--panel);
+  border-bottom: 2px solid var(--border);
+  flex-shrink: 0;
+  z-index: 20;
+}
+#header h1 {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--accent);
+  text-transform: uppercase;
+  flex: 1;
+  white-space: nowrap;
+}
+#header h1 em { color: var(--accent2); font-style: normal; }
+
+/* マップ切り替えセレクター */
+#map-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 10px;
+  padding: 3px 6px;
+  outline: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+#map-select:focus { border-color: var(--accent); }
+.hbadge {
+  font-size: 8px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+}
+#online-badge { font-size: 9px; color: var(--green); white-space: nowrap; }
+
+/* ════════════════════════════════════════
+   LAYOUT
+════════════════════════════════════════ */
+#app { display: flex; flex: 1; overflow: hidden; position: relative; }
+
+/* ════════════════════════════════════════
+   MAP
+════════════════════════════════════════ */
+#map-wrap {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #080816;
+}
+#gameCanvas {
+  display: block;
+  image-rendering: pixelated;
+}
+
+/* ════════════════════════════════════════
+   チャット吹き出し・コメント入力バー
+════════════════════════════════════════ */
+#bubble-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 8;
+}
+.speech-bubble {
+  position: absolute;  background: #fff;
+  color: #1a1a2e;
+  font-size: 9px;
+  line-height: 1.4;
+  padding: 4px 8px;
+  border-radius: 8px;
+  max-width: 140px;
+  word-break: break-word;
+  box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  pointer-events: none;
+  z-index: 8;
+}
+.speech-bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 16px;
+  border: 6px solid transparent;
+  border-top-color: #fff;
+  border-bottom: 0;
+}
+#chat-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  width: 320px;
+  max-width: calc(100% - 24px);
+  z-index: 6;
+}
+#chat-input {
+  flex: 1;
+  background: rgba(16,16,42,.9);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 7px 10px;
+  outline: none;
+  -webkit-appearance: none;
+  border-radius: 0;
+}
+#chat-input:focus { border-color: var(--accent); }
+#chat-send {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 0 14px;
+  cursor: pointer;
+  text-transform: uppercase;
+}
+#chat-send:active { background: #7070ff; }
+#chat-mic {
+  background: var(--border);
+  border: 1px solid #3a3a70;
+  color: var(--text);
+  font-size: 13px;
+  padding: 0 10px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#chat-mic:active { background: #3a3a70; }
+#chat-mic.recording {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+  animation: mic-pulse 1s infinite;
+}
+@keyframes mic-pulse { 0%,100%{opacity:1} 50%{opacity:.55} }
+
+/* ════════════════════════════════════════
+   DESKTOP SIDEBAR (≥ 640px)
+════════════════════════════════════════ */
+#sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sb-head {
+  font-size: 8px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--dim);
+  padding: 7px 10px 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+#players-list {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px 8px;
+}
+.pl-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 9px;
+}
+.pl-dot { width: 7px; height: 7px; flex-shrink: 0; }
+.pl-name { flex: 1; }
+.pl-dist { color: var(--dim); font-size: 8px; }
+
+#hints {
+  padding: 7px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 8px;
+  color: var(--dim);
+  line-height: 1.9;
+}
+.key {
+  display: inline-block;
+  background: var(--border);
+  color: var(--text);
+  padding: 0 3px;
+  font-size: 7px;
+  border-bottom: 2px solid #333;
+}
+
+/* ════════════════════════════════════════
+   MOBILE BOTTOM DRAWER
+════════════════════════════════════════ */
+#mob-drawer {
+  display: none;
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  background: var(--panel);
+  border-top: 2px solid var(--border);
+  z-index: 15;
+  transition: transform .25s ease;
+  transform: translateY(calc(100% - 32px)); /* ハンドル(32px)だけ常に見える状態にする */
+}
+#mob-drawer.open { transform: translateY(0); }
+
+#mob-drawer-handle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+#mob-drawer-handle span { font-size: 9px; color: var(--dim); letter-spacing: 2px; }
+#mob-drawer-handle .arrow { font-size: 10px; color: var(--accent); transition: transform .2s; }
+#mob-drawer.open .arrow { transform: rotate(180deg); }
+
+#mob-drawer-content {
+  padding: 8px 12px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+#mob-players-list .pl-row { font-size: 10px; padding: 3px 0; }
+#mob-players-list .pl-dot { width: 9px; height: 9px; }
+
+/* ════════════════════════════════════════
+   DPAD (スマホ用タップ操作)
+════════════════════════════════════════ */
+#dpad {
+  display: none;
+  position: absolute;
+  bottom: 60px;
+  left: 16px;
+  z-index: 10;
+  width: 108px;
+  height: 108px;
+}
+.dpad-btn {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  background: rgba(95,95,239,.35);
+  border: 1px solid rgba(95,95,239,.6);
+  color: #fff;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 3px;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+  user-select: none;
+}
+.dpad-btn:active { background: rgba(95,95,239,.65); }
+#dpad-up    { top: 0;    left: 37px; }
+#dpad-down  { bottom: 0; left: 37px; }
+#dpad-left  { top: 37px; left: 0;    }
+#dpad-right { top: 37px; right: 0;   }
+#dpad-center {
+  position: absolute;
+  top: 37px; left: 37px;
+  width: 34px; height: 34px;
+  background: rgba(30,30,60,.5);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+/* ════════════════════════════════════════
+   STATUSBAR
+════════════════════════════════════════ */
+#statusbar {
+  flex-shrink: 0;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  padding: 2px 10px;
+  font-size: 8px;
+  color: var(--dim);
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+#statusbar span { color: var(--text); }
+
+/* ════════════════════════════════════════
+   MODAL
+════════════════════════════════════════ */
+#modal-wrap {
+  position: fixed;
+  inset: 0;
+  background: rgba(4,4,16,.93);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 16px;
+}
+.modal {
+  background: var(--panel);
+  border: 2px solid var(--accent);
+  padding: 24px;
+  width: 100%;
+  max-width: 320px;
+  box-shadow: 0 0 50px rgba(95,95,239,.25);
+}
+.modal h2 {
+  font-size: 11px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 20px;
+  text-align: center;
+}
+.modal label {
+  display: block;
+  font-size: 8px;
+  letter-spacing: 2px;
+  color: var(--dim);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+.modal input[type=text] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+  margin-bottom: 14px;
+  border-radius: 0;
+  -webkit-appearance: none;
+}
+.modal input:focus { border-color: var(--accent); }
+.color-row { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+
+/* ── 会員認証ビュー ───────────────────────────── */
+.auth-view { display: none; }
+.auth-view.active { display: block; }
+.pw-wrap { position: relative; }
+.pw-wrap input { padding-right: 56px !important; }
+.pw-toggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-45%);
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 9px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  padding: 4px 6px;
+  text-transform: uppercase;
+}
+.auth-link {
+  display: block;
+  text-align: center;
+  font-size: 9px;
+  color: var(--accent);
+  cursor: pointer;
+  margin-top: 4px;
+  text-decoration: underline;
+}
+.auth-msg {
+  font-size: 9px;
+  color: var(--dim);
+  line-height: 1.6;
+  margin-bottom: 12px;
+  text-align: center;
+}
+.auth-msg.err { color: var(--red); }
+.auth-msg.ok  { color: var(--green); }
+.profile-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  margin-bottom: 14px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.profile-row .nick-edit {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 9px;
+  text-decoration: underline;
+}
+.color-sw {
+  width: 30px;
+  height: 30px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  image-rendering: pixelated;
+  border-radius: 2px;
+}
+.color-sw.sel { border-color: #fff; }
+.btn {
+  width: 100%;
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 2px;
+  padding: 11px;
+  cursor: pointer;
+  text-transform: uppercase;
+  -webkit-appearance: none;
+  border-radius: 0;
+}
+.btn:active { background: #7070ff; }
+.btn:disabled { background: var(--border); color: var(--dim); }
+
+/* ════════════════════════════════════════
+   TOAST & ERROR
+════════════════════════════════════════ */
+#toast {
+  position: fixed;
+  top: 46px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: #fff;
+  padding: 5px 14px;
+  font-size: 9px;
+  letter-spacing: 1px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .25s;
+  z-index: 200;
+  white-space: nowrap;
+  max-width: 90vw;
+  text-align: center;
+}
+#toast.show { opacity: 1; }
+#error-banner {
+  position: fixed;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--red);
+  color: #fff;
+  padding: 5px 16px;
+  font-size: 9px;
+  display: none;
+  z-index: 300;
+  white-space: nowrap;
+}
+
+/* ════════════════════════════════════════
+   MEETING ROOM PANEL
+════════════════════════════════════════ */
+#room-panel {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 260px;
+  max-width: calc(100vw - 24px);
+  background: var(--panel);
+  border: 2px solid var(--green);
+  box-shadow: 0 0 40px rgba(61,220,132,.25);
+  padding: 14px;
+  z-index: 50;
+  display: none;
+}
+#room-panel.show { display: block; }
+#room-panel .rp-head {
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--green);
+  margin-bottom: 8px;
+}
+#room-panel .rp-desc {
+  font-size: 9px;
+  color: var(--dim);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+#room-panel input[type=text] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 7px 8px;
+  font-family: inherit;
+  font-size: 11px;
+  outline: none;
+  margin-bottom: 8px;
+  border-radius: 0;
+  -webkit-appearance: none;
+}
+#room-panel input:focus { border-color: var(--green); }
+.rp-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.rp-btn {
+  flex: 1;
+  border: none;
+  color: #fff;
+  font-family: inherit;
+  font-size: 9px;
+  letter-spacing: 1px;
+  padding: 8px 4px;
+  cursor: pointer;
+  text-transform: uppercase;
+  -webkit-appearance: none;
+  border-radius: 0;
+}
+.rp-btn.zoom  { background: #2d8cff; }
+.rp-btn.meet  { background: #1a9e5c; }
+.rp-btn.save  { background: var(--accent); }
+.rp-btn.close { background: var(--border); color: var(--text); }
+.rp-btn:active { filter: brightness(1.2); }
+#room-badge {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  background: var(--green);
+  color: #052;
+  font-size: 9px;
+  letter-spacing: 1px;
+  padding: 4px 10px;
+  z-index: 5;
+  display: none;
+}
+#room-badge.show { display: block; }
+
+/* scrollbar */
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); }
+
+/* ─── メディアトグルボタン ───────────────────────────── */
+.media-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--border);
+  border: 1px solid #3a3a70;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 9px;
+  letter-spacing: 1px;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.media-btn:hover { background: #3a3a70; }
+.media-btn.danger {
+  background: #3a1020;
+  border-color: var(--red);
+  color: var(--red);
+}
+.media-btn.danger:hover { background: #5a1830; }
+/* スマホ: ボタンを少し大きく */
+/* モバイル退室ボタン（フローティング） */
+#btn-leave-mob-fixed {
+  display: none;
+  position: fixed;
+  bottom: 64px;
+  right: 14px;
+  z-index: 900;
+  background: #c0392b;
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  width: 54px;
+  height: 54px;
+  font-size: 22px;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0,0,0,.6);
+  line-height: 54px;
+  text-align: center;
+}
+
+@media (max-width: 639px) {
+  .media-btn { font-size: 10px; padding: 4px 10px; }
+}
+
+/* ════════════════════════════════════════
+   RESPONSIVE BREAKPOINT
+════════════════════════════════════════ */
+@media (max-width: 639px) {
+  /* サイドバーを非表示 */
+  #sidebar { display: none; }
+  /* モバイル専用UIを表示 */
+  #dpad                { display: block; }
+  #mob-drawer          { display: block; }
+  #btn-leave-mob-fixed { display: block; }
+  #btn-leave           { display: none !important; }
+  /* ヘッダーをコンパクトに */
+  #header h1 { font-size: 10px; letter-spacing: 1px; }
+  #map-select { font-size: 9px; padding: 3px 4px; max-width: 120px; }
+  .hbadge { display: none; }
+  /* ステータスバーを縮小 */
+  #statusbar { font-size: 7px; gap: 8px; }
+  /* 会議室パネル/バッジがドロワーの取っ手と重ならないように底上げ */
+  #room-panel, #room-badge { bottom: 40px; }
+  /* コメントバーがドロワーの取っ手・Dパッドと重ならないよう右側に寄せる */
+  #chat-bar {
+    left: auto;
+    right: 10px;
+    transform: none;
+    width: calc(100% - 148px);
+    max-width: 240px;
+    bottom: 40px;
+  }
+}
+</style>
+</head>
+<body>
+
+<div id="error-banner">⚠️ GAS_URL が未設定です。index.html の GAS_URL にデプロイURLを貼り付けてください。</div>
+
+<!-- ───── 入室モーダル ───── -->
+<div id="modal-wrap">
+  <div class="modal">
+    <h2>★ Virtual Hiroba ★</h2>
+
+    <!-- ログイン -->
+    <div class="auth-view active" data-view="login">
+      <div class="auth-msg" id="login-msg"></div>
+      <label>メールアドレス</label>
+      <input id="login-email" type="text" placeholder="you@example.com" autocomplete="username">
+      <label>パスワード</label>
+      <div class="pw-wrap">
+        <input id="login-password" type="password" placeholder="パスワード" autocomplete="current-password">
+        <button type="button" class="pw-toggle" data-target="login-password">表示</button>
+      </div>
+      <button class="btn" id="login-btn">▶ ログイン</button>
+      <span class="auth-link" id="to-register">会員登録がまだの方はこちら</span>
+      <span class="auth-link" id="to-forgot">パスワードを忘れた場合</span>
+    </div>
+
+    <!-- 新規登録 -->
+    <div class="auth-view" data-view="register">
+      <div class="auth-msg" id="register-msg"></div>
+      <label>ニックネーム</label>
+      <input id="register-name" type="text" maxlength="16" placeholder="あなたの名前" autocomplete="off">
+      <label>メールアドレス</label>
+      <input id="register-email" type="text" placeholder="you@example.com" autocomplete="email">
+      <button class="btn" id="register-btn">▶ 会員登録する</button>
+      <span class="auth-link" id="register-to-login">ログイン画面に戻る</span>
+    </div>
+
+    <!-- パスワード再発行 -->
+    <div class="auth-view" data-view="forgot">
+      <div class="auth-msg" id="forgot-msg">登録済みのメールアドレスに仮パスワードを再送します。</div>
+      <label>メールアドレス</label>
+      <input id="forgot-email" type="text" placeholder="you@example.com" autocomplete="email">
+      <button class="btn" id="forgot-btn">▶ 仮パスワードを送信</button>
+      <span class="auth-link" id="forgot-to-login">ログイン画面に戻る</span>
+    </div>
+
+    <!-- 初回/強制パスワード変更 -->
+    <div class="auth-view" data-view="changepw">
+      <div class="auth-msg" id="changepw-msg">初回ログインです。新しいパスワードを設定してください。</div>
+      <label>新しいパスワード（8文字以上）</label>
+      <div class="pw-wrap">
+        <input id="new-password" type="password" placeholder="新しいパスワード" autocomplete="new-password">
+        <button type="button" class="pw-toggle" data-target="new-password">表示</button>
+      </div>
+      <label>新しいパスワード（確認）</label>
+      <div class="pw-wrap">
+        <input id="new-password2" type="password" placeholder="もう一度入力" autocomplete="new-password">
+        <button type="button" class="pw-toggle" data-target="new-password2">表示</button>
+      </div>
+      <button class="btn" id="changepw-btn">▶ パスワードを変更</button>
+    </div>
+
+    <!-- 入室準備（プロフィール確認＋アバターカラー） -->
+    <div class="auth-view" data-view="enter">
+      <div class="profile-row">
+        <span id="profile-name"></span>
+        <span class="nick-edit" id="nick-edit-link">ニックネーム変更</span>
+      </div>
+      <div id="nick-edit-box" style="display:none; margin-bottom:14px;">
+        <input id="nick-edit-input" type="text" maxlength="16" placeholder="新しいニックネーム" autocomplete="off">
+        <button class="btn" id="nick-edit-save" style="margin-bottom:0;">保存</button>
+      </div>
+      <label>アバターカラー</label>
+      <div class="color-row" id="color-row"></div>
+      <button class="btn" id="enter-btn">▶ 入室する</button>
+      <span class="auth-link" id="logout-link">ログアウト</span>
+    </div>
+  </div>
+</div>
+
+<!-- ───── ヘッダー ───── -->
+<div id="header">
+  <h1>★ Virtual <em id="header-map-title">Office</em></h1>
+  <!-- マップ切り替え -->
+  <select id="map-select" title="マップを切り替え">
+    <option value="bright">☀️ 明るいオフィス</option>
+    <option value="park">🌳 公園</option>
+    <option value="cafe">☕ カフェ</option>
+    <option value="dark">🌙 ダークオフィス</option>
+  </select>
+  <div class="hbadge">SECURE</div>
+  <div id="online-badge">● 0 online</div>
+  <button class="media-btn danger" id="btn-leave" title="退室する" style="margin-left:4px;">🚪 退室</button>
+</div>
+
+<!-- ───── メイン ───── -->
+<div id="app">
+
+  <!-- MAP -->
+  <div id="map-wrap">
+    <canvas id="gameCanvas"></canvas>
+    <div id="bubble-layer"></div>
+    <div id="room-badge">🏢 エリアにいます</div>
+
+    <!-- 会議室パネル（Zoom / Google Meet） -->
+    <div id="room-panel">
+      <div class="rp-head" id="rp-room-name">エリア</div>
+      <div class="rp-desc" id="rp-desc">Zoom または Google Meet のリンクを入力して参加してください。保存すると同じエリアにいる全員と共有されます。</div>
+      <input id="rp-link" type="text" placeholder="ミーティングURL または ID">
+      <div class="rp-row">
+        <button class="rp-btn zoom" id="rp-zoom">Zoomで開く</button>
+        <button class="rp-btn meet" id="rp-meet">Meetで開く</button>
+      </div>
+      <div class="rp-row">
+        <button class="rp-btn save" id="rp-save">リンクを保存</button>
+        <button class="rp-btn close" id="rp-close">閉じる</button>
+      </div>
+    </div>
+
+    <!-- モバイル: Dパッド -->
+    <div id="dpad">
+      <div class="dpad-btn" id="dpad-up">↑</div>
+      <div class="dpad-btn" id="dpad-left">←</div>
+      <div class="dpad-center"></div>
+      <div class="dpad-btn" id="dpad-right">→</div>
+      <div class="dpad-btn" id="dpad-down">↓</div>
+    </div>
+
+    <!-- コメント入力バー -->
+    <div id="chat-bar">
+      <input id="chat-input" type="text" maxlength="40" placeholder="ひとことコメント...">
+      <button id="chat-mic" title="音声入力">🎤</button>
+      <button id="chat-send">送信</button>
+    </div>
+
+    <!-- モバイル: 下部ドロワー -->
+    <div id="mob-drawer">
+      <div id="mob-drawer-handle">
+        <span>▶ MEMBERS</span>
+        <span class="arrow">▲</span>
+      </div>
+      <div id="mob-drawer-content">
+        <div id="mob-players-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- モバイル: フローティング退室ボタン -->
+  <button id="btn-leave-mob-fixed" title="退室">🚪</button>
+
+  <!-- デスクトップ: サイドバー -->
+  <div id="sidebar">
+    <div class="sb-head">▶ Members</div>
+    <div id="players-list"></div>
+    <div id="hints">
+      <span class="key">↑↓←→</span> / <span class="key">WASD</span> で移動<br>
+      下のコメント欄からひとこと送信できます
+    </div>
+  </div>
+</div>
+
+<!-- ───── ステータスバー ───── -->
+<div id="statusbar">
+  <div>POS <span id="st-pos">-,-</span></div>
+  <div>MAP <span id="st-map">-</span></div>
+  <div>API <span id="st-api">-</span></div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ============================================================
+// CONFIG CHECK
+// ============================================================
+// ★ GAS（code.gs）のウェブアプリURL。デプロイ後に1回だけ貼り付ける
+//   既存デプロイを「新バージョン」で更新すればURLは変わらないので、以後の変更は不要です。
+const GAS_URL = 'ここにGASのウェブアプリURLを貼り付け';
+
+if (!/^https:\/\/script\.google\.com\//.test(GAS_URL)) {
+  document.getElementById('error-banner').style.display = 'block';
+  document.getElementById('enter-btn').disabled = true;
+  document.getElementById('login-btn').disabled = true;
+}
+
+// ============================================================
+// デバイス判定
+// ============================================================
+const IS_MOBILE = () => window.innerWidth < 640;
+
+// ============================================================
+// 定数
+// ============================================================
+const TILE       = 32;
+const MAP_W      = 24;
+const MAP_H      = 18;
+const POLL_MS    = 1500;
+const COMMENT_TTL_MS = 20000; // 吹き出しの表示継続時間
+
+const AVATAR_COLORS = ['#ef5fa7','#5fefb0','#efcf5f','#5faaef','#ef8f5f','#af5fef'];
+
+// ============================================================
+// マップ定義（明るいオフィス / 公園 / カフェ / ダークオフィス）
+//   タイル: 0=歩ける床  1=壁・柵  2=机・池・テーブル  3=植物・木
+//   マップごとに別空間。同じマップを選んだ人同士だけが見える。
+//   rooms の id は会議リンク保存キー。ダークは旧バージョンと同じ a/b/c
+//   （既存の保存リンクを引き継ぐため）。
+// ============================================================
+const OFFICE_LAYOUT = [
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,1],
+  [1,0,2,2,0,0,0,2,2,0,0,0,1,0,0,0,2,2,0,0,2,2,0,1],
+  [1,0,2,2,0,0,0,2,2,0,0,0,1,0,0,0,2,2,0,0,2,2,0,1],
+  [1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,1],
+  [1,0,0,0,0,3,0,0,0,0,3,0,0,0,0,3,0,0,0,0,3,0,0,1],
+  [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+  [1,0,2,2,0,0,0,2,2,0,0,0,0,0,0,2,2,0,0,0,2,2,0,1],
+  [1,0,2,2,0,0,0,2,2,0,0,0,0,0,0,2,2,0,0,0,2,2,0,1],
+  [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+  [1,0,0,0,0,3,0,0,0,0,3,0,0,0,0,3,0,0,0,0,3,0,0,1],
+  [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+  [1,0,2,2,0,0,0,2,2,0,0,0,1,0,0,0,2,2,0,0,2,2,0,1],
+  [1,0,2,2,0,0,0,2,2,0,0,0,1,0,0,0,2,2,0,0,2,2,0,1],
+  [1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,1],
+  [1,0,0,0,0,3,0,0,0,0,3,0,1,0,3,0,0,0,0,3,0,0,0,1],
+  [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+];
+
+const THEMES = {
+  bright: {
+    label: 'Office', title: '明るいオフィス', icon: '☀️',
+    wrapBg: '#f0f3f8',
+    colors: {
+      0: { f:'#eef2f7', s:'#dfe4ec' },
+      1: { f:'#bcc5d3', s:'#9aa5b6' },
+      2: { f:'#ffffff', s:'#c5d1e0' },
+      3: { f:'#e6f2e8', s:'#c3e0ca' },
+    },
+    rooms: [
+      { id:'bright_a', name:'ミーティングルーム A', x0:13, y0:1,  x1:15, y1:3  },
+      { id:'bright_b', name:'ミーティングルーム B', x0:13, y0:12, x1:15, y1:14 },
+      { id:'bright_c', name:'オープンラウンジ',     x0:2,  y0:14, x1:5,  y1:16 },
+    ],
+    roomColor: 'rgba(52,152,219,.16)', roomTextColor: '#1b6ca8', roomTextShadow: 'rgba(255,255,255,.9)',
+    nameColor: '#2c3e50', meNameColor: '#d35400', nameShadow: 'rgba(255,255,255,.85)', markerColor: '#d35400',
+    map: OFFICE_LAYOUT,
+  },
+  park: {
+    label: 'Park', title: '公園', icon: '🌳',
+    wrapBg: '#447a38',
+    colors: {
+      0: { f:'#5ea14b', s:'#579846' },
+      1: { f:'#375d2c', s:'#2c4c23' },
+      2: { f:'#6db7e6', s:'#5aa9dc' },
+      3: { f:'#5ea14b', s:'#579846' },
+    },
+    rooms: [
+      { id:'park_a', name:'木陰のベンチ A', x0:2,  y0:2,  x1:5,  y1:4  },
+      { id:'park_b', name:'噴水・広場 B',   x0:14, y0:2,  x1:17, y1:4  },
+      { id:'park_c', name:'芝生スペース C', x0:15, y0:12, x1:18, y1:14 },
+    ],
+    roomColor: 'rgba(255,235,59,.22)', roomTextColor: '#fff3b0', roomTextShadow: 'rgba(0,0,0,.6)',
+    nameColor: '#ffffff', meNameColor: '#ffe066', nameShadow: 'rgba(0,0,0,.6)', markerColor: '#ffffff',
+    map: [
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+      [1,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,3,0,0,0,0,0,0,0,0,2,2,2,2,0,0,0,0,0,0,0,0,3,1],
+      [1,0,0,0,3,0,0,0,0,2,2,2,2,2,2,0,0,0,3,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,1],
+      [1,0,0,0,3,0,0,0,0,2,2,2,2,2,2,0,0,0,3,0,0,0,0,1],
+      [1,3,0,0,0,0,0,0,0,0,2,2,2,2,0,0,0,0,0,0,0,0,3,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,3,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,3,1],
+      [1,3,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,3,0,1],
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+    ],
+  },
+  cafe: {
+    label: 'Cafe', title: 'カフェ', icon: '☕',
+    wrapBg: '#3b2418',
+    colors: {
+      0: { f:'#c8a27a', s:'#b8916a' },
+      1: { f:'#5b3a29', s:'#4a2e20' },
+      2: { f:'#c8a27a', s:'#b8916a' },
+      3: { f:'#c8a27a', s:'#b8916a' },
+    },
+    rooms: [
+      { id:'cafe_a', name:'カウンター席 A', x0:2,  y0:3,  x1:8,  y1:3  },
+      { id:'cafe_b', name:'ソファ席 B',     x0:15, y0:4,  x1:22, y1:7  },
+      { id:'cafe_c', name:'テラス席 C',     x0:1,  y0:13, x1:6,  y1:16 },
+    ],
+    roomColor: 'rgba(255,214,140,.22)', roomTextColor: '#fff1d6', roomTextShadow: 'rgba(0,0,0,.65)',
+    nameColor: '#fff8ee', meNameColor: '#ffe066', nameShadow: 'rgba(0,0,0,.65)', markerColor: '#ffffff',
+    map: [
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,0,0,0,0,0,0,3,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,2,0,0,0,2,0,0,0,2,0,0,0,0,2,2,0,0,2,2,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,2,2,0,1],
+      [1,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,2,0,0,0,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,3,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,2,0,0,0,2,0,0,0,2,0,0,0,0,2,2,0,0,2,2,0,1],
+      [1,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,2,2,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,2,2,2,0,0,0,3,0,0,0,0,0,3,0,0,0,0,0,0,0,3,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+    ],
+  },
+  dark: {
+    label: 'Office', title: 'ダークオフィス', icon: '🌙',
+    wrapBg: '#080816',
+    colors: {
+      0: { f:'#181832', s:'#1e1e42' },
+      1: { f:'#080816', s:'#0d0d24' },
+      2: { f:'#1c3050', s:'#2a4870' },
+      3: { f:'#0d3320', s:'#155535' },
+    },
+    rooms: [
+      { id:'a', name:'会議室 A', x0:13, y0:1,  x1:15, y1:3  },
+      { id:'b', name:'会議室 B', x0:13, y0:12, x1:15, y1:14 },
+      { id:'c', name:'会議室 C', x0:2,  y0:15, x1:4,  y1:16 },
+    ],
+    roomColor: 'rgba(61,220,132,.14)', roomTextColor: '#3ddc84', roomTextShadow: 'rgba(0,0,0,.55)',
+    nameColor: '#e0e0ff', meNameColor: '#ffe066', nameShadow: 'rgba(0,0,0,.55)', markerColor: '#ffffff',
+    map: OFFICE_LAYOUT,
+  },
+};
+
+const STORAGE_PREFIX  = 'vh_'; // 同じ kenken6291.github.io 上の他サイトと保存領域がぶつからないように
+const MAP_STORAGE_KEY = STORAGE_PREFIX + 'map_id';
+let currentMapId = (() => {
+  try { const v = localStorage.getItem(MAP_STORAGE_KEY); if (THEMES[v]) return v; } catch (e) {}
+  return 'bright';
+})();
+function theme()  { return THEMES[currentMapId]; }
+function curMap() { return theme().map; }
+
+function isFloor(x, y) {
+  return x >= 0 && x < MAP_W && y >= 0 && y < MAP_H && curMap()[y][x] === 0;
+}
+function randomFloor() {
+  const floors = [];
+  for (let y=1; y<MAP_H-1; y++) for (let x=1; x<MAP_W-1; x++) if (curMap()[y][x] === 0) floors.push({x,y});
+  return floors[Math.floor(Math.random() * floors.length)];
+}
+function roomAt(x, y) {
+  return theme().rooms.find(r => x>=r.x0 && x<=r.x1 && y>=r.y0 && y<=r.y1) ?? null;
+}
+let currentRoom = null;      // 現在いるエリア（オブジェクト or null）
+
+// マップの見た目（ヘッダー表記・背景・ステータス）を反映
+function applyThemeUI() {
+  const th = theme();
+  document.getElementById('header-map-title').textContent = th.label;
+  document.getElementById('map-wrap').style.background = th.wrapBg;
+  document.getElementById('st-map').textContent = th.icon + ' ' + th.title;
+  document.getElementById('map-select').value = currentMapId;
+}
+
+function initMapSelect() {
+  applyThemeUI();
+  document.getElementById('map-select').addEventListener('change', (e) => switchMap(e.target.value));
+}
+
+// マップ切り替え（入室中なら別空間へ移動）
+function switchMap(id) {
+  if (!THEMES[id] || id === currentMapId) return;
+  currentMapId = id;
+  try { localStorage.setItem(MAP_STORAGE_KEY, id); } catch (e) {}
+  applyThemeUI();
+  document.getElementById('map-select').blur(); // 矢印キーで移動できるようフォーカスを外す
+
+  if (!myToken || !myId || document.getElementById('modal-wrap').style.display !== 'none') return;
+
+  // 今の位置が新マップで歩けない場所なら空いている床へ移動
+  if (!isFloor(myX, myY)) {
+    const sp = randomFloor();
+    myX = sp.x; myY = sp.y;
+  }
+  document.getElementById('st-pos').textContent = `${myX},${myY}`;
+  myComment = ''; myCommentAt = 0; // 前のマップの吹き出しは持ち越さない
+  if (currentRoom) exitRoom();
+  updateRoomState();
+  updatePlayersList();
+  pushPos();
+  setTimeout(pushPos, 1200); // レート制限で弾かれた場合の保険
+  toast(`${theme().icon} ${theme().title} に移動しました`);
+}
+
+// ============================================================
+// セッション状態
+// ============================================================
+let myId = null, myToken = null;
+let myName = 'ゲスト', myColor = AVATAR_COLORS[0];
+let myX = 3, myY = 3;
+let otherUsers = {};
+let myComment = '', myCommentAt = 0; // 自分の吹き出し（楽観表示用）
+
+// ============================================================
+// API ヘルパー
+// ============================================================
+async function apiGet(params) {
+  const p = { ...params };
+  if (myToken) p.token = myToken;
+  const res = await fetch(`${GAS_URL}?${new URLSearchParams(p)}`, {
+    cache:    'no-store',
+    redirect: 'follow',
+  });
+  const data = await res.json();
+  if (!data.ok && data.code === 401) handleAuthError();
+  return data;
+}
+async function apiPost(body) {
+  const b = { ...body };
+  if (myToken) b.token = myToken;
+  const res = await fetch(GAS_URL, {
+    method:   'POST',
+    redirect: 'follow',
+    headers:  { 'Content-Type': 'text/plain' }, // GASのCORS回避: text/plainにする
+    body:     JSON.stringify(b),
+  });
+  const data = await res.json();
+  if (!data.ok && data.code === 401) handleAuthError();
+  return data;
+}
+function handleAuthError() {
+  toast('⚠️ セッションが無効です。再度ログインしてください。');
+  stopPolling();
+  myToken = null; myId = null;
+  showAuthView('login');
+  document.getElementById('modal-wrap').style.display = 'flex';
+}
+
+// ============================================================
+// Canvas
+// ============================================================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+function resizeCanvas() {
+  const w = document.getElementById('map-wrap');
+  canvas.width  = w.clientWidth;
+  canvas.height = w.clientHeight;
+}
+window.addEventListener('resize', () => { resizeCanvas(); });
+
+// ============================================================
+// 描画
+// ============================================================
+function getCam() {
+  return {
+    ox: canvas.width  / 2 - myX * TILE - TILE / 2,
+    oy: canvas.height / 2 - myY * TILE - TILE / 2,
+  };
+}
+
+function drawFrame() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const { ox, oy } = getCam();
+  const th  = theme();
+  const map = th.map;
+
+  for (let ty = 0; ty < MAP_H; ty++) {
+    for (let tx = 0; tx < MAP_W; tx++) {
+      const t = map[ty][tx];
+      const c = th.colors[t] ?? th.colors[0];
+      const sx = tx * TILE + ox, sy = ty * TILE + oy;
+      if (sx < -TILE || sy < -TILE || sx > canvas.width || sy > canvas.height) continue;
+      ctx.fillStyle = c.f;
+      ctx.fillRect(sx, sy, TILE, TILE);
+      ctx.strokeStyle = c.s;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sx+.5, sy+.5, TILE-1, TILE-1);
+      drawDeco(t, sx, sy, tx, ty);
+      if (roomAt(tx, ty)) {
+        ctx.fillStyle = th.roomColor;
+        ctx.fillRect(sx, sy, TILE, TILE);
+      }
+    }
+  }
+
+  // エリアラベル
+  ctx.font = '8px "Courier New"';
+  ctx.textAlign = 'center';
+  for (const r of th.rooms) {
+    const cx2 = (r.x0 + r.x1 + 1) / 2 * TILE + ox;
+    const topY = r.y0 * TILE + oy;
+    ctx.fillStyle = th.roomTextShadow;
+    ctx.fillText(r.name, cx2+1, topY-3);
+    ctx.fillStyle = th.roomTextColor;
+    ctx.fillText(r.name, cx2, topY-4);
+  }
+
+  for (const u of Object.values(otherUsers)) {
+    if (u.mapId !== currentMapId) continue; // 別マップの人は表示しない
+    drawAvatar(u.x*TILE+ox, u.y*TILE+oy, u.avatarColor, u.name, false);
+  }
+  drawAvatar(myX*TILE+ox, myY*TILE+oy, myColor, myName, true);
+
+  updateBubbles(ox, oy);
+  requestAnimationFrame(drawFrame);
+}
+
+// 描画ループは1本だけ（退室→再入室で多重起動しないように）
+let drawLoopStarted = false;
+function startDrawLoop() {
+  if (drawLoopStarted) return;
+  drawLoopStarted = true;
+  requestAnimationFrame(drawFrame);
+}
+
+// ============================================================
+// タイルの装飾（マップごと）
+// ============================================================
+function drawDeco(t, sx, sy, tx, ty) {
+  switch (currentMapId) {
+    case 'bright': return decoBright(t, sx, sy);
+    case 'park':   return decoPark(t, sx, sy, tx, ty);
+    case 'cafe':   return decoCafe(t, sx, sy, tx, ty);
+    default:       return decoDark(t, sx, sy);
+  }
+}
+
+function decoDark(t, sx, sy) {
+  if (t === 3) {
+    ctx.fillStyle='#1f8844'; ctx.fillRect(sx+10,sy+6,12,10); ctx.fillRect(sx+8,sy+10,16,8);
+    ctx.fillStyle='#155535'; ctx.fillRect(sx+14,sy+16,4,8);
+  } else if (t === 2) {
+    ctx.fillStyle='#2a4870'; ctx.fillRect(sx+4,sy+6,TILE-8,12);
+    ctx.fillStyle='#5090c8'; ctx.fillRect(sx+8,sy+9,TILE-16,6);
+  }
+}
+
+function decoBright(t, sx, sy) {
+  if (t === 2) {
+    // 白いデスク＋モニター
+    ctx.fillStyle='#dfe6ef'; ctx.fillRect(sx+3,sy+18,TILE-6,8);
+    ctx.fillStyle='#34495e'; ctx.fillRect(sx+8,sy+5,TILE-16,12);
+    ctx.fillStyle='#8ec5f0'; ctx.fillRect(sx+10,sy+7,TILE-20,8);
+    ctx.fillStyle='#34495e'; ctx.fillRect(sx+14,sy+17,4,2);
+  } else if (t === 3) {
+    // 鉢植え
+    ctx.fillStyle='#3e9a52'; ctx.fillRect(sx+10,sy+5,12,10); ctx.fillRect(sx+7,sy+9,18,7);
+    ctx.fillStyle='#5cbf6e'; ctx.fillRect(sx+12,sy+7,4,4);
+    ctx.fillStyle='#c98b5a'; ctx.fillRect(sx+11,sy+17,10,9);
+    ctx.fillStyle='#a8703f'; ctx.fillRect(sx+10,sy+16,12,3);
+  }
+}
+
+function decoPark(t, sx, sy, tx, ty) {
+  if (t === 0) {
+    // 芝生にところどころ花
+    const h = (tx * 7 + ty * 13) % 11;
+    if (h === 0) {
+      ctx.fillStyle='#ffffff'; ctx.fillRect(sx+8,sy+10,3,3); ctx.fillRect(sx+20,sy+20,3,3);
+      ctx.fillStyle='#ffd23f'; ctx.fillRect(sx+9,sy+11,1,1);
+    } else if (h === 5) {
+      ctx.fillStyle='#ff8fb1'; ctx.fillRect(sx+18,sy+8,3,3);
+    } else if (h === 3) {
+      ctx.fillStyle='#4f8d3e'; ctx.fillRect(sx+6,sy+22,1,4); ctx.fillRect(sx+9,sy+21,1,5);
+    }
+  } else if (t === 2) {
+    // 池のさざ波
+    ctx.fillStyle='#a6d8f5';
+    if ((tx + ty) % 2 === 0) { ctx.fillRect(sx+6,sy+10,8,2); ctx.fillRect(sx+18,sy+22,7,2); }
+    else                     { ctx.fillRect(sx+14,sy+14,9,2); }
+  } else if (t === 3) {
+    // 木
+    ctx.fillStyle='rgba(0,0,0,.18)'; ctx.fillRect(sx+6,sy+26,20,4);
+    ctx.fillStyle='#6b4423'; ctx.fillRect(sx+13,sy+18,6,10);
+    ctx.fillStyle='#245e28'; ctx.fillRect(sx+6,sy+6,20,14); ctx.fillRect(sx+9,sy+2,14,20);
+    ctx.fillStyle='#2f7a33'; ctx.fillRect(sx+10,sy+5,8,6);
+  } else if (t === 1) {
+    // 生垣
+    ctx.fillStyle='#2f5226'; ctx.fillRect(sx+3,sy+3,8,8); ctx.fillRect(sx+18,sy+16,9,9);
+  }
+}
+
+function decoCafe(t, sx, sy, tx, ty) {
+  if (t === 0) {
+    // 木目の床
+    ctx.fillStyle='rgba(120,80,45,.18)';
+    ctx.fillRect(sx, sy+15, TILE, 1);
+    ctx.fillRect(sx + ((ty % 2) ? 10 : 22), sy, 1, 15);
+  } else if (t === 2) {
+    // テーブル＋コーヒーカップ
+    ctx.fillStyle='rgba(0,0,0,.18)'; ctx.fillRect(sx+5,sy+24,22,4);
+    ctx.fillStyle='#7a4a2e'; ctx.fillRect(sx+3,sy+6,TILE-6,18);
+    ctx.fillStyle='#93603d'; ctx.fillRect(sx+5,sy+8,TILE-10,14);
+    if ((tx + ty) % 2 === 0) {
+      ctx.fillStyle='#ffffff'; ctx.fillRect(sx+12,sy+11,7,6); ctx.fillRect(sx+19,sy+13,2,2);
+      ctx.fillStyle='#4a2a14'; ctx.fillRect(sx+13,sy+12,5,2);
+    }
+  } else if (t === 3) {
+    // 観葉植物
+    ctx.fillStyle='#3f8a4a'; ctx.fillRect(sx+9,sy+4,14,12); ctx.fillRect(sx+6,sy+9,20,6);
+    ctx.fillStyle='#e8e0d0'; ctx.fillRect(sx+10,sy+17,12,9);
+  } else if (t === 1) {
+    // レンガ壁
+    ctx.fillStyle='rgba(0,0,0,.18)';
+    ctx.fillRect(sx, sy+10, TILE, 1); ctx.fillRect(sx, sy+21, TILE, 1);
+    ctx.fillRect(sx+16, sy, 1, 10); ctx.fillRect(sx+8, sy+11, 1, 10); ctx.fillRect(sx+24, sy+11, 1, 10);
+  }
+}
+
+// ============================================================
+// コメント吹き出し（DOMオーバーレイ）
+// ============================================================
+const bubbleLayer = document.getElementById('bubble-layer');
+const bubbleEls = {};
+
+function updateBubbles(ox, oy) {
+  const now = Date.now();
+  const active = new Set();
+
+  function upsert(key, x, y, text, commentAt) {
+    if (!text || !commentAt || now - commentAt > COMMENT_TTL_MS) return;
+    active.add(key);
+    let el = bubbleEls[key];
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'speech-bubble';
+      bubbleLayer.appendChild(el);
+      bubbleEls[key] = el;
+    }
+    if (el.textContent !== text) el.textContent = text;
+    const sx = x * TILE + ox, sy = y * TILE + oy;
+    el.style.left = (sx + TILE / 2) + 'px';
+    el.style.top  = (sy - 8) + 'px';
+    el.style.transform = 'translate(-50%, -100%)';
+  }
+
+  upsert('self', myX, myY, myComment, myCommentAt);
+  for (const [uid, u] of Object.entries(otherUsers)) {
+    if (u.mapId !== currentMapId) continue;
+    upsert(uid, u.x, u.y, u.comment, u.commentAt);
+  }
+
+  for (const key of Object.keys(bubbleEls)) {
+    if (!active.has(key)) { bubbleEls[key].remove(); delete bubbleEls[key]; }
+  }
+}
+
+function drawAvatar(sx, sy, color, name, isMe) {
+  const s = TILE;
+  ctx.fillStyle='rgba(0,0,0,.3)'; ctx.fillRect(sx+4,sy+s-5,s-8,4);
+  ctx.fillStyle = isMe ? brighten(color,30) : color;
+  ctx.fillRect(sx+8,sy+14,s-16,12); ctx.fillRect(sx+4,sy+26,6,6);
+  ctx.fillRect(sx+s-10,sy+26,6,6); ctx.fillRect(sx+2,sy+14,5,10);
+  ctx.fillRect(sx+s-7,sy+14,5,10);
+  ctx.fillStyle='#f5c6a0'; ctx.fillRect(sx+8,sy+4,s-16,12);
+  ctx.fillStyle=darken(color,40); ctx.fillRect(sx+8,sy+4,s-16,4); ctx.fillRect(sx+6,sy+6,3,6);
+  ctx.fillStyle='#1a1a2e'; ctx.fillRect(sx+11,sy+9,2,3); ctx.fillRect(sx+s-13,sy+9,2,3);
+  const th = theme();
+  if (isMe) {
+    ctx.fillStyle = th.markerColor;
+    ctx.beginPath(); ctx.moveTo(sx+s/2,sy-8); ctx.lineTo(sx+s/2-4,sy-2); ctx.lineTo(sx+s/2+4,sy-2);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.font='7px "Courier New"'; ctx.textAlign='center';
+  ctx.fillStyle = th.nameShadow; ctx.fillText(name,sx+s/2+1,sy+s-1);
+  ctx.fillStyle = isMe ? th.meNameColor : th.nameColor; ctx.fillText(name,sx+s/2,sy+s-2);
+}
+function brighten(hex,a){return shiftHex(hex,a);}
+function darken(hex,a){return shiftHex(hex,-a);}
+function shiftHex(hex,a){
+  const n=parseInt(hex.slice(1),16),cl=v=>Math.min(255,Math.max(0,v));
+  return '#'+[cl((n>>16)+a),cl(((n>>8)&255)+a),cl((n&255)+a)].map(v=>v.toString(16).padStart(2,'0')).join('');
+}
+
+// ============================================================
+// キーボード移動 (デスクトップ)
+// ============================================================
+const keys = {};
+let moveInterval = null;
+
+document.addEventListener('keydown', e => {
+  // 入力欄・セレクター操作中は移動しない（コメント入力で w/a/s/d が反応しないように）
+  if (e.target.closest && e.target.closest('input, textarea, select')) return;
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','w','a','s','d'].includes(e.key)) {
+    e.preventDefault(); keys[e.key] = true;
+    if (!moveInterval) moveInterval = setInterval(moveTick, 150);
+  }
+});
+document.addEventListener('keyup', e => {
+  keys[e.key] = false;
+  if (!Object.values(keys).some(Boolean)) { clearInterval(moveInterval); moveInterval = null; }
+});
+
+// ============================================================
+// Dパッド (スマホ)
+// ============================================================
+const DPAD_DIRS = {
+  'dpad-up':    { dy:-1 },
+  'dpad-down':  { dy: 1 },
+  'dpad-left':  { dx:-1 },
+  'dpad-right': { dx: 1 },
+};
+let dpadInterval = null;
+let dpadDx = 0, dpadDy = 0;
+
+Object.keys(DPAD_DIRS).forEach(id => {
+  const el = document.getElementById(id);
+  const { dx=0, dy=0 } = DPAD_DIRS[id];
+
+  const start = (e) => {
+    e.preventDefault();
+    dpadDx = dx; dpadDy = dy;
+    if (!dpadInterval) dpadInterval = setInterval(dpadTick, 200);
+  };
+  const end = (e) => {
+    e.preventDefault();
+    dpadDx = 0; dpadDy = 0;
+    clearInterval(dpadInterval); dpadInterval = null;
+  };
+
+  el.addEventListener('touchstart', start, { passive: false });
+  el.addEventListener('touchend',   end,   { passive: false });
+  el.addEventListener('mousedown',  start);
+  el.addEventListener('mouseup',    end);
+});
+
+function dpadTick() {
+  if (!dpadDx && !dpadDy) return;
+  tryMove(dpadDx, dpadDy);
+}
+
+// ============================================================
+// 移動共通
+// ============================================================
+function moveTick() {
+  let dx=0, dy=0;
+  if (keys['ArrowUp']   ||keys['w']) dy=-1;
+  if (keys['ArrowDown'] ||keys['s']) dy= 1;
+  if (keys['ArrowLeft'] ||keys['a']) dx=-1;
+  if (keys['ArrowRight']||keys['d']) dx= 1;
+  if (dx||dy) tryMove(dx,dy);
+}
+
+function tryMove(dx, dy) {
+  if (!myToken) return;
+  const nx=myX+dx, ny=myY+dy;
+  if (isFloor(nx, ny)) {
+    myX=nx; myY=ny;
+    document.getElementById('st-pos').textContent=`${myX},${myY}`;
+    pushPos();
+    updateRoomState();
+  }
+}
+
+// ============================================================
+// 会議室 入退室
+// ============================================================
+function updateRoomState() {
+  const r = roomAt(myX, myY);
+  if (r && (!currentRoom || currentRoom.id !== r.id)) {
+    enterRoom(r);
+  } else if (!r && currentRoom) {
+    exitRoom();
+  }
+}
+
+let roomLinkPollTid = null;
+
+async function enterRoom(room) {
+  currentRoom = room;
+  const badge = document.getElementById('room-badge');
+  badge.textContent = '🏢 ' + room.name;
+  badge.classList.add('show');
+  toast(`🏢 ${room.name} に入りました`);
+
+  document.getElementById('rp-room-name').textContent = '🏢 ' + room.name;
+  document.getElementById('rp-link').value = '読み込み中...';
+  document.getElementById('room-panel').classList.add('show');
+  const link = await getRoomLink(room.id);
+  document.getElementById('rp-link').value = link;
+
+  // 部屋にいる間は数秒おきにリンクを再取得し、他の参加者が
+  // 保存した最新のURLを自動で反映する（入力中は上書きしない）
+  clearInterval(roomLinkPollTid);
+  roomLinkPollTid = setInterval(async () => {
+    if (!currentRoom) return;
+    const input = document.getElementById('rp-link');
+    if (document.activeElement === input) return; // 編集中は触らない
+    const latest = await getRoomLink(currentRoom.id);
+    if (latest && latest !== input.value) {
+      input.value = latest;
+      toast('🔗 会議室のリンクが更新されました');
+    }
+  }, 4000);
+}
+
+function exitRoom() {
+  if (!currentRoom) return;
+  toast(`${currentRoom.name} を出ました`);
+  currentRoom = null;
+  clearInterval(roomLinkPollTid);
+  roomLinkPollTid = null;
+  document.getElementById('room-badge').classList.remove('show');
+  document.getElementById('room-panel').classList.remove('show');
+}
+
+// 会議リンクはメインのGASで共有管理（別GASは不要）
+async function getRoomLink(roomId) {
+  try {
+    const res = await apiGet({ action:'getRoomLink', roomId });
+    if (res.ok) return res.link || '';
+  } catch (e) { console.warn('getRoomLink', e); }
+  return '';
+}
+
+async function saveRoomLink(roomId, link) {
+  try {
+    const res = await apiPost({ action:'setRoomLink', roomId, link });
+    return res;
+  } catch (e) {
+    console.warn('saveRoomLink', e);
+    return { ok:false, error:'サーバーへの接続に失敗しました' };
+  }
+}
+
+function buildZoomUrl(v) {
+  v = v.trim();
+  if (!v) return null;
+  if (/^https?:\/\//i.test(v)) return v;
+  const id = v.replace(/\D/g,'');
+  return id ? `https://zoom.us/j/${id}` : null;
+}
+function buildMeetUrl(v) {
+  v = v.trim();
+  if (!v) return null;
+  if (/^https?:\/\//i.test(v)) return v;
+  return `https://meet.google.com/${v}`;
+}
+
+document.getElementById('rp-zoom').addEventListener('click', () => {
+  const url = buildZoomUrl(document.getElementById('rp-link').value);
+  if (!url) { toast('⚠️ ZoomのURLまたはIDを入力してください'); return; }
+  window.open(url, '_blank', 'noopener');
+});
+document.getElementById('rp-meet').addEventListener('click', () => {
+  const url = buildMeetUrl(document.getElementById('rp-link').value);
+  if (!url) { toast('⚠️ Google MeetのURLまたはコードを入力してください'); return; }
+  window.open(url, '_blank', 'noopener');
+});
+document.getElementById('rp-save').addEventListener('click', async () => {
+  if (!currentRoom) return;
+  const link = document.getElementById('rp-link').value.trim();
+  const res = await saveRoomLink(currentRoom.id, link);
+  if (res.ok) toast('💾 リンクを保存しました（全員と共有）');
+  else        toast('⚠️ ' + (res.error ?? 'リンクの保存に失敗しました'));
+});
+document.getElementById('rp-close').addEventListener('click', () => {
+  document.getElementById('room-panel').classList.remove('show');
+});
+
+// ============================================================
+// Dpadドロワートグル
+// ============================================================
+document.getElementById('mob-drawer-handle').addEventListener('click', () => {
+  document.getElementById('mob-drawer').classList.toggle('open');
+});
+
+// ============================================================
+// GAS 通信
+// ============================================================
+async function pushPos() {
+  try {
+    await apiPost({ action:'updatePosition', name:myName, x:myX, y:myY, avatarColor:myColor, mapId:currentMapId });
+  } catch(e) { console.warn('pushPos',e); }
+}
+
+let pollUsersTid=null, keepaliveTid=null;
+function startPolling() {
+  pollUsersTid  = setInterval(pollUsers, POLL_MS);
+  keepaliveTid  = setInterval(pushPos, 8000);
+}
+function stopPolling() {
+  clearInterval(pollUsersTid); clearInterval(keepaliveTid);
+}
+
+async function pollUsers() {
+  try {
+    const res = await apiGet({ action:'getUsers' });
+    if (!res.ok) return;
+    otherUsers = {};
+    let cnt = 0;
+    for (const u of res.users) {
+      if (u.userId===myId) continue;
+      u.commentAt = u.commentAt ? new Date(u.commentAt).getTime() : 0;
+      u.comment   = u.comment || '';
+      u.mapId     = THEMES[u.mapId] ? u.mapId : 'bright';
+      otherUsers[u.userId] = u; cnt++;
+    }
+    const here = Object.values(otherUsers).filter(u => u.mapId === currentMapId).length + 1;
+    const badge = document.getElementById('online-badge');
+    badge.textContent = here === cnt + 1 ? `● ${here} online` : `● ${here}/${cnt+1} online`;
+    badge.title = `このマップ ${here}人 / 全体 ${cnt+1}人`;
+    updatePlayersList();
+    document.getElementById('st-api').textContent = 'OK';
+  } catch(e) { document.getElementById('st-api').textContent='ERR'; }
+}
+
+function dist2D(a,b) { return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2); }
+
+// ============================================================
+// コメント送信
+// ============================================================
+async function sendComment(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  // 自分の吹き出しは送信結果を待たずに即表示（体感速度優先）
+  myComment = trimmed;
+  myCommentAt = Date.now();
+  try {
+    const res = await apiPost({ action:'sendComment', text: trimmed });
+    if (!res.ok) toast('⚠️ ' + (res.error ?? 'コメントの送信に失敗しました'));
+  } catch(e) { console.warn('sendComment', e); }
+}
+
+document.getElementById('chat-send').addEventListener('click', () => {
+  const input = document.getElementById('chat-input');
+  sendComment(input.value);
+  input.value = '';
+});
+document.getElementById('chat-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    sendComment(e.target.value);
+    e.target.value = '';
+  }
+});
+
+// ============================================================
+// コメント音声入力（Gemini APIで文字起こし）
+// ============================================================
+let mediaRecorder = null;
+let audioChunks = [];
+const chatMicBtn = document.getElementById('chat-mic');
+
+async function toggleVoiceInput() {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus' : 'audio/webm';
+    mediaRecorder = new MediaRecorder(stream, { mimeType });
+
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      chatMicBtn.classList.remove('recording');
+      chatMicBtn.textContent = '🎤';
+      const blob = new Blob(audioChunks, { type: mimeType });
+      if (blob.size === 0) { toast('⚠️ 録音データがありません'); return; }
+      await transcribeAndFill(blob, mimeType);
+    };
+
+    mediaRecorder.start();
+    chatMicBtn.classList.add('recording');
+    chatMicBtn.textContent = '⏹';
+    toast('🎙 録音中... もう一度押すと終了します');
+    // 安全のため最大15秒で自動停止
+    setTimeout(() => {
+      if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+    }, 15000);
+  } catch (e) {
+    toast('⚠️ マイクを利用できません');
+    console.error(e);
+  }
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function transcribeAndFill(blob, mimeType) {
+  toast('⏳ 文字起こし中...');
+  try {
+    const audioBase64 = await blobToBase64(blob);
+    const res = await apiPost({ action:'transcribeAudio', audioBase64, mimeType });
+    if (!res.ok) { toast('⚠️ ' + (res.error ?? '文字起こしに失敗しました')); return; }
+    document.getElementById('chat-input').value = res.text;
+    document.getElementById('chat-input').focus();
+    toast('✅ 文字起こし完了。内容を確認して送信してください');
+  } catch(e) {
+    toast('⚠️ 文字起こしに失敗しました');
+    console.error(e);
+  }
+}
+
+chatMicBtn.addEventListener('click', toggleVoiceInput);
+
+// ============================================================
+// プレイヤーリスト更新 (デスクトップ & モバイル共通)
+// ============================================================
+function buildPlayerRow(name, color, dist, isMe) {
+  const row = document.createElement('div');
+  row.className = 'pl-row';
+  row.innerHTML = `
+    <div class="pl-dot" style="background:${color}"></div>
+    <div class="pl-name">${escapeHtml(name)}</div>
+    ${dist!==null ? `<div class="pl-dist">${dist}</div>` : ''}
+    ${isMe  ? `<div class="pl-dist" style="color:var(--yellow)">YOU</div>` : ''}`;
+  return row;
+}
+
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function updatePlayersList() {
+  ['players-list','mob-players-list'].forEach(id => {
+    const list = document.getElementById(id);
+    if (!list) return;
+    list.innerHTML = '';
+    list.appendChild(buildPlayerRow(myName, myColor, null, true));
+    const users = Object.values(otherUsers);
+    // 同じマップの人を先に（距離順）、他マップの人は後ろにマップ名付きで
+    const same  = users.filter(u => u.mapId === currentMapId)
+                       .sort((a,b) => dist2D({x:myX,y:myY},a) - dist2D({x:myX,y:myY},b));
+    const other = users.filter(u => u.mapId !== currentMapId);
+    for (const u of same) {
+      const d = dist2D({x:myX,y:myY},u).toFixed(1);
+      list.appendChild(buildPlayerRow(u.name, u.avatarColor??'#888', d, false));
+    }
+    for (const u of other) {
+      list.appendChild(buildPlayerRow(u.name, u.avatarColor??'#888', THEMES[u.mapId].icon, false));
+    }
+  });
+}
+
+// ============================================================
+// トースト
+// ============================================================
+let toastTid;
+function toast(msg) {
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.classList.add('show');
+  clearTimeout(toastTid); toastTid=setTimeout(()=>el.classList.remove('show'),3000);
+}
+
+function doLeave() {
+  if (!myId) { toast('⚠️ 入室していません'); return; }
+  if (!confirm('退室しますか？')) return;
+  apiPost({ action: 'leave' }).catch(() => {});
+  stopPolling();
+  otherUsers = {};
+  currentRoom = null;
+  clearInterval(roomLinkPollTid);
+  roomLinkPollTid = null;
+  document.getElementById('room-badge').classList.remove('show');
+  document.getElementById('room-panel').classList.remove('show');
+  enterProfileView(); // ログイン状態は維持し、プロフィール画面に戻す
+  document.getElementById('modal-wrap').style.display = 'flex';
+  document.getElementById('online-badge').textContent = '● 0 online';
+  document.getElementById('players-list').innerHTML = '';
+  document.getElementById('mob-drawer').classList.remove('open');
+  toast('退室しました');
+}
+// 退室ボタン（存在する要素のみにイベント登録）
+['btn-leave', 'btn-leave-mob', 'btn-leave-mob-fixed'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('click', doLeave);
+});
+
+// ============================================================
+// 会員認証UI
+// ============================================================
+function showAuthView(name) {
+  document.querySelectorAll('.auth-view').forEach(v => v.classList.toggle('active', v.dataset.view === name));
+}
+
+// パスワード表示/非表示トグル
+document.querySelectorAll('.pw-toggle').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const input = document.getElementById(btn.dataset.target);
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    btn.textContent = showing ? '表示' : '非表示';
+  });
+});
+
+// 画面切り替えリンク
+document.getElementById('to-register').addEventListener('click', () => { showAuthView('register'); document.getElementById('register-msg').textContent=''; });
+document.getElementById('to-forgot').addEventListener('click', () => { showAuthView('forgot'); });
+document.getElementById('register-to-login').addEventListener('click', () => showAuthView('login'));
+document.getElementById('forgot-to-login').addEventListener('click', () => showAuthView('login'));
+
+function setAuthMsg(id, msg, kind) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.classList.remove('err','ok');
+  if (kind) el.classList.add(kind);
+}
+
+// ── 新規登録 ──
+document.getElementById('register-btn').addEventListener('click', async () => {
+  const nickname = document.getElementById('register-name').value.trim();
+  const email    = document.getElementById('register-email').value.trim();
+  if (!nickname) { setAuthMsg('register-msg','ニックネームを入力してください','err'); return; }
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { setAuthMsg('register-msg','正しいメールアドレスを入力してください','err'); return; }
+  const btn = document.getElementById('register-btn');
+  btn.disabled = true; btn.textContent = '送信中...';
+  try {
+    const res = await apiPost({ action:'register', nickname, email });
+    if (!res.ok) { setAuthMsg('register-msg', res.error ?? '登録に失敗しました', 'err'); }
+    else {
+      setAuthMsg('register-msg', '仮パスワードをメールに送信しました。届いたパスワードでログインしてください。', 'ok');
+      document.getElementById('login-email').value = email;
+      setTimeout(() => showAuthView('login'), 1800);
+    }
+  } catch(e) { setAuthMsg('register-msg','サーバーへの接続に失敗しました','err'); console.error(e); }
+  btn.disabled = false; btn.textContent = '▶ 会員登録する';
+});
+
+// ── ログイン ──
+document.getElementById('login-btn').addEventListener('click', async () => {
+  const email    = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  if (!email || !password) { setAuthMsg('login-msg','メールアドレスとパスワードを入力してください','err'); return; }
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true; btn.textContent = '確認中...';
+  try {
+    const res = await apiPost({ action:'login', email, password });
+    if (!res.ok) { setAuthMsg('login-msg', res.error ?? 'ログインに失敗しました', 'err'); }
+    else {
+      myId = res.userId; myToken = res.token;
+      myName = res.nickname; myColor = res.avatarColor || AVATAR_COLORS[0];
+      setAuthMsg('login-msg','');
+      document.getElementById('login-password').value = '';
+      if (res.mustChangePassword) {
+        showAuthView('changepw');
+      } else {
+        enterProfileView();
+      }
+    }
+  } catch(e) { setAuthMsg('login-msg','サーバーへの接続に失敗しました','err'); console.error(e); }
+  btn.disabled = false; btn.textContent = '▶ ログイン';
+});
+
+// ── パスワード再発行 ──
+document.getElementById('forgot-btn').addEventListener('click', async () => {
+  const email = document.getElementById('forgot-email').value.trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { setAuthMsg('forgot-msg','正しいメールアドレスを入力してください','err'); return; }
+  const btn = document.getElementById('forgot-btn');
+  btn.disabled = true; btn.textContent = '送信中...';
+  try {
+    await apiPost({ action:'forgotPassword', email });
+    setAuthMsg('forgot-msg','登録されている場合は、仮パスワードを送信しました。','ok');
+  } catch(e) { setAuthMsg('forgot-msg','サーバーへの接続に失敗しました','err'); console.error(e); }
+  btn.disabled = false; btn.textContent = '▶ 仮パスワードを送信';
+});
+
+// ── パスワード変更（初回強制／任意） ──
+document.getElementById('changepw-btn').addEventListener('click', async () => {
+  const p1 = document.getElementById('new-password').value;
+  const p2 = document.getElementById('new-password2').value;
+  if (p1.length < 8) { setAuthMsg('changepw-msg','パスワードは8文字以上にしてください','err'); return; }
+  if (p1 !== p2) { setAuthMsg('changepw-msg','パスワードが一致しません','err'); return; }
+  const btn = document.getElementById('changepw-btn');
+  btn.disabled = true; btn.textContent = '変更中...';
+  try {
+    const res = await apiPost({ action:'changePassword', newPassword:p1 });
+    if (!res.ok) { setAuthMsg('changepw-msg', res.error ?? '変更に失敗しました', 'err'); }
+    else {
+      document.getElementById('new-password').value = '';
+      document.getElementById('new-password2').value = '';
+      enterProfileView();
+    }
+  } catch(e) { setAuthMsg('changepw-msg','サーバーへの接続に失敗しました','err'); console.error(e); }
+  btn.disabled = false; btn.textContent = '▶ パスワードを変更';
+});
+
+// ── 入室準備画面 ──
+function enterProfileView() {
+  document.getElementById('profile-name').textContent = '👤 ' + myName;
+  showAuthView('enter');
+}
+document.getElementById('nick-edit-link').addEventListener('click', () => {
+  const box = document.getElementById('nick-edit-box');
+  document.getElementById('nick-edit-input').value = myName;
+  box.style.display = box.style.display === 'none' ? 'block' : 'none';
+});
+document.getElementById('nick-edit-save').addEventListener('click', async () => {
+  const nn = document.getElementById('nick-edit-input').value.trim();
+  if (!nn) { toast('ニックネームを入力してください'); return; }
+  try {
+    const res = await apiPost({ action:'updateNickname', nickname:nn });
+    if (!res.ok) { toast('⚠️ '+(res.error ?? '変更に失敗しました')); return; }
+    myName = nn;
+    document.getElementById('profile-name').textContent = '👤 ' + myName;
+    document.getElementById('nick-edit-box').style.display = 'none';
+    toast('✅ ニックネームを変更しました');
+  } catch(e) { toast('⚠️ サーバーへの接続に失敗しました'); console.error(e); }
+});
+document.getElementById('logout-link').addEventListener('click', () => {
+  myId = null; myToken = null;
+  document.getElementById('login-password').value = '';
+  showAuthView('login');
+});
+
+// ============================================================
+// 入室UI（アバターカラー選択）
+// ============================================================
+function buildColorPicker() {
+  const row = document.getElementById('color-row');
+  AVATAR_COLORS.forEach((c,i) => {
+    const d=document.createElement('div');
+    d.className='color-sw'+(c===myColor?' sel':(i===0&&!myColor?' sel':''));
+    d.style.background=c;
+    d.onclick=()=>{ document.querySelectorAll('.color-sw').forEach(s=>s.classList.remove('sel')); d.classList.add('sel'); myColor=c; };
+    row.appendChild(d);
+  });
+}
+
+document.getElementById('enter-btn').addEventListener('click', async () => {
+  if (!myToken) { toast('ログインしてください'); showAuthView('login'); return; }
+  const btn = document.getElementById('enter-btn');
+  btn.disabled=true; btn.textContent='接続中...';
+  try {
+    const res = await apiGet({ action:'join' });
+    if (!res.ok) {
+      toast('⚠️ '+(res.error??'入室失敗'));
+      btn.disabled=false; btn.textContent='▶ 入室する';
+      if (res.code === 401) showAuthView('login');
+      return;
+    }
+    myId=res.userId; myToken=res.token; myName=res.name;
+
+    const sp = randomFloor();
+    myX=sp.x; myY=sp.y;
+
+    document.getElementById('modal-wrap').style.display='none';
+    document.getElementById('st-pos').textContent=`${myX},${myY}`;
+
+    resizeCanvas();
+    await pushPos();
+    updateRoomState();
+    startPolling();
+    startDrawLoop();
+
+    window.addEventListener('beforeunload', ()=>{ apiPost({action:'leave'}).catch(()=>{}); });
+  } catch(e) {
+    toast('⚠️ サーバーへの接続に失敗しました');
+    console.error(e);
+    btn.disabled=false; btn.textContent='▶ 入室する';
+  }
+});
+
+buildColorPicker();
+initMapSelect();
+</script>
+</body>
+</html>

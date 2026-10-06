@@ -93,7 +93,7 @@ body {
 }
 #gameCanvas {
   display: block;
-  image-rendering: pixelated;
+  /* 高解像度で描くので pixelated は使わない（顔写真がガタガタになるため） */
 }
 
 /* ════════════════════════════════════════
@@ -1239,12 +1239,20 @@ function handleAuthError() {
 // ============================================================
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
-ctx.imageSmoothingEnabled = false;
+// 画面の見た目サイズ（CSSピクセル）。キャンバス自体は端末の画素密度ぶん細かく描く
+let viewW = 0, viewH = 0;
 
 function resizeCanvas() {
-  const w = document.getElementById('map-wrap');
-  canvas.width  = w.clientWidth;
-  canvas.height = w.clientHeight;
+  const w   = document.getElementById('map-wrap');
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  viewW = w.clientWidth; viewH = w.clientHeight;
+  canvas.width  = Math.round(viewW * dpr);
+  canvas.height = Math.round(viewH * dpr);
+  canvas.style.width  = viewW + 'px';
+  canvas.style.height = viewH + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
 }
 window.addEventListener('resize', () => { resizeCanvas(); });
 
@@ -1255,8 +1263,8 @@ function getCam() {
   const a = anim.self;
   const cx = a ? a.x : myX, cy = a ? a.y : myY;
   return {
-    ox: Math.round(canvas.width  / 2 - cx * TILE - TILE / 2),
-    oy: Math.round(canvas.height / 2 - cy * TILE - TILE / 2),
+    ox: Math.round(viewW / 2 - cx * TILE - TILE / 2),
+    oy: Math.round(viewH / 2 - cy * TILE - TILE / 2),
   };
 }
 
@@ -1277,7 +1285,7 @@ function drawFrame() {
     animStep(uid, u.x, u.y, dt);
     setAnimExpr(uid, exprOf(u.comment, u.commentAt, u.expression));
   }
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.clearRect(0, 0, viewW, viewH);
   const { ox, oy } = getCam();
   const th  = theme();
   const map = th.map;
@@ -1287,7 +1295,7 @@ function drawFrame() {
       const t = map[ty][tx];
       const c = th.colors[t] ?? th.colors[0];
       const sx = tx * TILE + ox, sy = ty * TILE + oy;
-      if (sx < -TILE || sy < -TILE || sx > canvas.width || sy > canvas.height) continue;
+      if (sx < -TILE || sy < -TILE || sx > viewW || sy > viewH) continue;
       ctx.fillStyle = c.f;
       ctx.fillRect(sx, sy, TILE, TILE);
       ctx.strokeStyle = c.s;
@@ -1455,7 +1463,7 @@ function updateBubbles(ox, oy) {
     const a = anim[key];
     const sx = (a ? a.x : x) * TILE + ox, sy = (a ? a.y : y) * TILE + oy;
     el.style.left = (sx + TILE / 2) + 'px';
-    el.style.top  = (sy - 12) + 'px'; // 頭（顔）にかからない高さ
+    el.style.top  = (sy - 16) + 'px'; // 頭（顔）にかからない高さ
     el.style.transform = 'translate(-50%, -100%)';
   }
 
@@ -1761,7 +1769,7 @@ const EXPRS = [
   { id:'troubled',  label:'困った顔',   emoji:'😥' },
 ];
 const EXPR_EMOJI = Object.fromEntries(EXPRS.map(e => [e.id, e.emoji]));
-const FACE_OUT_SIZE = 128;
+const FACE_OUT_SIZE = 160;
 
 // 顔画像キャッシュ { userId: { ver, img: { normal: Image, ... } } }
 const faceStore = {};
@@ -1906,12 +1914,13 @@ function drawAvatar(sx, sy, color, name, isMe, uid, expr, a) {
   ctx.fillRect(sx + 23, by + 17 - swing * 2, 4, 8);
 
   // 頭（顔写真 or ドット絵の顔）
-  const hx = sx + s/2, hy = by + 7;
-  const r  = 12 * pop;   // 顔がわかるよう頭は少し大きめ（タイルの上にはみ出してOK）
+  const hx = sx + s/2, hy = by + 5;
+  const r  = 14 * pop;   // 顔がわかるよう頭は大きめ（タイルの上にはみ出してOK）
   const { img, exact } = uid ? faceImageFor(uid, expr) : { img: null, exact: false };
   if (img) {
     ctx.save();
     ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI*2); ctx.closePath(); ctx.clip();
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, hx - r, hy - r, r*2, r*2);
     ctx.restore();
     ctx.strokeStyle = body; ctx.lineWidth = 2;
@@ -2117,7 +2126,7 @@ document.getElementById('crop-ok').addEventListener('click', () => {
   octx.fillStyle = '#fff'; octx.fillRect(0, 0, FACE_OUT_SIZE, FACE_OUT_SIZE);
   const r = cropRect(FACE_OUT_SIZE);
   octx.drawImage(cropImg, r.x, r.y, r.w, r.h);
-  faceDraft[cropTarget] = out.toDataURL('image/jpeg', 0.82);
+  faceDraft[cropTarget] = out.toDataURL('image/jpeg', 0.85);
   faceChanged.add(cropTarget);
   closeCropper();
   renderFaceGrid();

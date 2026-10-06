@@ -1269,6 +1269,9 @@ function getCam() {
 }
 
 let lastFrameAt = performance.now();
+function isTalking(comment, commentAt) {
+  return !!(comment && commentAt && Date.now() - commentAt < COMMENT_TTL_MS);
+}
 function exprOf(comment, commentAt, expression) {
   return (comment && commentAt && Date.now() - commentAt < COMMENT_TTL_MS) ? (expression || 'normal') : 'normal';
 }
@@ -1280,10 +1283,12 @@ function drawFrame() {
   // 表示位置を目標へ近づける（歩きアニメーション）
   const selfA = animStep('self', myX, myY, dt);
   setAnimExpr('self', exprOf(myComment, myCommentAt, myExpr));
+  setAnimTalk('self', isTalking(myComment, myCommentAt), dt);
   for (const [uid, u] of Object.entries(otherUsers)) {
     if (u.mapId !== currentMapId) continue;
     animStep(uid, u.x, u.y, dt);
     setAnimExpr(uid, exprOf(u.comment, u.commentAt, u.expression));
+    setAnimTalk(uid, isTalking(u.comment, u.commentAt), dt);
   }
   ctx.clearRect(0, 0, viewW, viewH);
   const { ox, oy } = getCam();
@@ -1326,7 +1331,7 @@ function drawFrame() {
     .filter(([, u]) => u.mapId === currentMapId)   // 別マップの人は表示しない
     .map(([uid, u]) => ({ uid, u, a: anim[uid] }));
   list.push({ uid: 'self', self: true, a: selfA });
-  list.sort((p, q) => p.a.y - q.a.y);
+  list.sort((p, q) => ((p.a.talk ?? 1) > 1.05) - ((q.a.talk ?? 1) > 1.05) || p.a.y - q.a.y);
   for (const it of list) {
     const px = Math.round(it.a.x * TILE + ox), py = Math.round(it.a.y * TILE + oy);
     if (it.self) drawAvatar(px, py, myColor, myName, true, myId, it.a.expr, it.a);
@@ -1463,7 +1468,8 @@ function updateBubbles(ox, oy) {
     const a = anim[key];
     const sx = (a ? a.x : x) * TILE + ox, sy = (a ? a.y : y) * TILE + oy;
     el.style.left = (sx + TILE / 2) + 'px';
-    el.style.top  = (sy - 16) + 'px'; // 頭（顔）にかからない高さ
+    const headTop = a?.headTopOff ?? -9;
+    el.style.top  = (sy + headTop - 10) + 'px'; // 頭（顔）にかからない高さ
     el.style.transform = 'translate(-50%, -100%)';
   }
 
@@ -1870,6 +1876,17 @@ function animStep(key, tx, ty, dt) {
   return a;
 }
 
+// 発言中は顔を大きく（なめらかに拡大・縮小）
+const TALK_SCALE = 1.75;
+function setAnimTalk(key, talking, dt) {
+  const a = anim[key];
+  if (!a) return;
+  if (a.talk == null) a.talk = 1;
+  const target = talking ? TALK_SCALE : 1;
+  a.talk += (target - a.talk) * Math.min(1, dt * 8);
+  a.talking = talking;
+}
+
 function setAnimExpr(key, expr) {
   const a = anim[key];
   if (!a) return;
@@ -1914,8 +1931,11 @@ function drawAvatar(sx, sy, color, name, isMe, uid, expr, a) {
   ctx.fillRect(sx + 23, by + 17 - swing * 2, 4, 8);
 
   // 頭（顔写真 or ドット絵の顔）
-  const hx = sx + s/2, hy = by + 5;
-  const r  = 14 * pop;   // 顔がわかるよう頭は大きめ（タイルの上にはみ出してOK）
+  const talk = a?.talk ?? 1;
+  const r  = 14 * pop * talk;         // 顔がわかるよう頭は大きめ。発言中はさらに大きく
+  const hx = sx + s/2;
+  const hy = by + 5 - (14 * talk - 14); // 大きくなっても首の位置はそのまま（上に伸びる）
+  if (a) a.headTopOff = (hy - r) - sy;  // 吹き出しの位置合わせ用
   const { img, exact } = uid ? faceImageFor(uid, expr) : { img: null, exact: false };
   if (img) {
     ctx.save();
@@ -1923,12 +1943,12 @@ function drawAvatar(sx, sy, color, name, isMe, uid, expr, a) {
     ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, hx - r, hy - r, r*2, r*2);
     ctx.restore();
-    ctx.strokeStyle = body; ctx.lineWidth = 2;
+    ctx.strokeStyle = body; ctx.lineWidth = talk > 1.05 ? 3 : 2;
     ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI*2); ctx.stroke();
     // その表情の写真が無いときは絵文字で表情を補う
     if (!exact && expr !== 'normal') {
-      ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText(EXPR_EMOJI[expr], hx + r, hy - r + 4);
+      ctx.font = Math.round(11 * Math.max(1, talk * 0.85)) + 'px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(EXPR_EMOJI[expr], hx + r * 0.85, hy - r * 0.65);
     }
   } else {
     drawPixelFace(hx, hy, r, color, expr);
@@ -1950,6 +1970,14 @@ function drawAvatar(sx, sy, color, name, isMe, uid, expr, a) {
 
 // 顔写真が無い人用：表情つきの丸い顔
 function drawPixelFace(hx, hy, r, color, expr) {
+  // 大きさが変わっても目や口の比率が保たれるよう、半径10の顔を拡大縮小して描く
+  ctx.save();
+  ctx.translate(hx, hy);
+  ctx.scale(r / 10, r / 10);
+  drawPixelFaceBase(0, 0, 10, color, expr);
+  ctx.restore();
+}
+function drawPixelFaceBase(hx, hy, r, color, expr) {
   ctx.fillStyle = '#f5c6a0';
   ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI*2); ctx.fill();
   // 髪

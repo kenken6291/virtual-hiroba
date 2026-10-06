@@ -369,7 +369,8 @@ body {
   margin-bottom: 4px;
   text-transform: uppercase;
 }
-.modal input[type=text] {
+.modal input[type=text],
+.modal input[type=password] {
   width: 100%;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -393,8 +394,10 @@ body {
 .pw-toggle {
   position: absolute;
   right: 6px;
-  top: 50%;
-  transform: translateY(-45%);
+  top: 0;
+  height: 37px;
+  display: flex;
+  align-items: center;
   background: none;
   border: none;
   color: var(--dim);
@@ -1058,7 +1061,6 @@ function switchMap(id) {
   updateRoomState();
   updatePlayersList();
   pushPos();
-  setTimeout(pushPos, 1200); // レート制限で弾かれた場合の保険
   toast(`${theme().icon} ${theme().title} に移動しました`);
 }
 
@@ -1076,29 +1078,69 @@ let myComment = '', myCommentAt = 0; // 自分の吹き出し（楽観表示用�
 // ============================================================
 // GASとの通信はすべてPOSTで行う
 // （GETはGoogle側のリダイレクトで404になる環境があるため）
+// スマホ回線向けに、タイムアウトと自動リトライを入れている。
+const API_TIMEOUT_MS = 15000;
+// 2回送っても問題ない処理だけリトライする（メール送信・コメント投稿などは除外）
+const RETRY_ACTIONS = new Set(['login','join','getUsers','getRoomLink','updatePosition','leave','changePassword','updateNickname','setRoomLink']);
+
 async function apiGet(params) {
   return apiPost(params);
 }
+
+async function apiPostOnce(b) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+  try {
+    const res = await fetch(GAS_URL, {
+      method:   'POST',
+      redirect: 'follow',
+      cache:    'no-store',
+      headers:  { 'Content-Type': 'text/plain' }, // GASのCORS回避: text/plainにする
+      body:     JSON.stringify(b),
+      signal:   ctrl.signal,
+    });
+    const text = await res.text();
+    try { return JSON.parse(text); }
+    catch (e) {
+      console.warn('GAS応答がJSONではありません', res.status, text.slice(0, 120));
+      throw new Error('サーバー応答エラー (' + res.status + ')');
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('通信がタイムアウトしました');
+    throw e;
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
 async function apiPost(body) {
   const b = { ...body };
   if (myToken) b.token = myToken;
-  const res = await fetch(GAS_URL, {
-    method:   'POST',
-    redirect: 'follow',
-    cache:    'no-store',
-    headers:  { 'Content-Type': 'text/plain' }, // GASのCORS回避: text/plainにする
-    body:     JSON.stringify(b),
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); }
-  catch (e) {
-    console.error('GAS応答がJSONではありません', res.status, text.slice(0, 200));
-    throw new Error('サーバー応答エラー (' + res.status + ')');
+  const tries = RETRY_ACTIONS.has(b.action) ? 3 : 1;
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const data = await apiPostOnce(b);
+      if (!data.ok && data.code === 401) handleAuthError();
+      return data;
+    } catch (e) {
+      lastErr = e;
+      if (i < tries - 1) await new Promise(r => setTimeout(r, 800 * (i + 1)));
+    }
   }
-  if (!data.ok && data.code === 401) handleAuthError();
-  return data;
+  throw lastErr;
 }
+
+// ページを閉じるとき用（スマホでも届きやすい sendBeacon）
+function sendLeaveBeacon() {
+  if (!myToken) return;
+  const payload = JSON.stringify({ action:'leave', token: myToken });
+  try {
+    if (navigator.sendBeacon && navigator.sendBeacon(GAS_URL, new Blob([payload], { type:'text/plain' }))) return;
+  } catch (e) {}
+  fetch(GAS_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body: payload, keepalive: true }).catch(()=>{});
+}
+
 function handleAuthError() {
   toast('⚠️ セッションが無効です。再度ログインしてください。');
   stopPolling();
@@ -1392,9 +1434,11 @@ Object.keys(DPAD_DIRS).forEach(id => {
   };
 
   el.addEventListener('touchstart', start, { passive: false });
-  el.addEventListener('touchend',   end,   { passive: false });
-  el.addEventListener('mousedown',  start);
-  el.addEventListener('mouseup',    end);
+  el.addEventListener('touchend',    end,   { passive: false });
+  el.addEventListener('touchcancel', end,   { passive: false });
+  el.addEventListener('mousedown',   start);
+  el.addEventListener('mouseup',     end);
+  el.addEventListener('mouseleave',  end);
 });
 
 function dpadTick() {
@@ -1541,25 +1585,58 @@ document.getElementById('mob-drawer-handle').addEventListener('click', () => {
 // ============================================================
 // GAS 通信
 // ============================================================
+// 位置送信は「送信中なら最後の位置だけ後でまとめて送る」方式。
+// 移動のたびに連打せず、サーバーのレート制限（約1秒）にも当たりにくい。
+const POS_MIN_INTERVAL_MS = 1100;
+let posSending = false, posPending = false, posLastSent = 0;
+
 async function pushPos() {
+  if (!myToken) return;
+  if (posSending) { posPending = true; return; }
+  const wait = POS_MIN_INTERVAL_MS - (Date.now() - posLastSent);
+  if (wait > 0) {
+    posPending = true;
+    if (!pushPos._tid) pushPos._tid = setTimeout(() => { pushPos._tid = null; if (posPending) { posPending = false; pushPos(); } }, wait);
+    return;
+  }
+  posSending = true; posPending = false;
   try {
     await apiPost({ action:'updatePosition', name:myName, x:myX, y:myY, avatarColor:myColor, mapId:currentMapId });
-  } catch(e) { console.warn('pushPos',e); }
+  } catch(e) { console.warn('pushPos', e); }
+  posLastSent = Date.now();
+  posSending = false;
+  if (posPending) { posPending = false; pushPos(); }
 }
 
-let pollUsersTid=null, keepaliveTid=null;
+// ポーリングは前の応答が返ってから次を予約（回線が遅いときに積み重ならない）
+let polling = false, pollTid = null, keepaliveTid = null;
 function startPolling() {
-  pollUsersTid  = setInterval(pollUsers, POLL_MS);
-  keepaliveTid  = setInterval(pushPos, 8000);
+  stopPolling();
+  polling = true;
+  const loop = async () => {
+    if (!polling) return;
+    if (!document.hidden) await pollUsers();
+    if (polling) pollTid = setTimeout(loop, POLL_MS);
+  };
+  loop();
+  keepaliveTid = setInterval(() => { if (!document.hidden) pushPos(); }, 8000);
 }
 function stopPolling() {
-  clearInterval(pollUsersTid); clearInterval(keepaliveTid);
+  polling = false;
+  clearTimeout(pollTid); clearInterval(keepaliveTid);
+  pollTid = null; keepaliveTid = null;
 }
 
+// スマホでアプリを切り替えて戻ったときに、すぐ位置と一覧を更新
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && myToken && polling) { pushPos(); pollUsers(); }
+});
+
 async function pollUsers() {
+  if (!myToken) return;
   try {
     const res = await apiGet({ action:'getUsers' });
-    if (!res.ok) return;
+    if (!res.ok || !polling) return;
     otherUsers = {};
     let cnt = 0;
     for (const u of res.users) {
@@ -1926,7 +2003,10 @@ document.getElementById('enter-btn').addEventListener('click', async () => {
     startPolling();
     startDrawLoop();
 
-    window.addEventListener('beforeunload', ()=>{ apiPost({action:'leave'}).catch(()=>{}); });
+    if (!window._leaveHooked) {
+      window._leaveHooked = true;
+      window.addEventListener('pagehide', sendLeaveBeacon); // スマホはbeforeunloadが発火しないことがある
+    }
   } catch(e) {
     toast('⚠️ サーバーへの接続に失敗しました');
     console.error(e);

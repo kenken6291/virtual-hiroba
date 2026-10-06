@@ -1074,16 +1074,10 @@ let myComment = '', myCommentAt = 0; // 自分の吹き出し（楽観表示用�
 // ============================================================
 // API ヘルパー
 // ============================================================
+// GASとの通信はすべてPOSTで行う
+// （GETはGoogle側のリダイレクトで404になる環境があるため）
 async function apiGet(params) {
-  const p = { ...params };
-  if (myToken) p.token = myToken;
-  const res = await fetch(`${GAS_URL}?${new URLSearchParams(p)}`, {
-    cache:    'no-store',
-    redirect: 'follow',
-  });
-  const data = await res.json();
-  if (!data.ok && data.code === 401) handleAuthError();
-  return data;
+  return apiPost(params);
 }
 async function apiPost(body) {
   const b = { ...body };
@@ -1091,10 +1085,17 @@ async function apiPost(body) {
   const res = await fetch(GAS_URL, {
     method:   'POST',
     redirect: 'follow',
+    cache:    'no-store',
     headers:  { 'Content-Type': 'text/plain' }, // GASのCORS回避: text/plainにする
     body:     JSON.stringify(b),
   });
-  const data = await res.json();
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); }
+  catch (e) {
+    console.error('GAS応答がJSONではありません', res.status, text.slice(0, 200));
+    throw new Error('サーバー応答エラー (' + res.status + ')');
+  }
   if (!data.ok && data.code === 401) handleAuthError();
   return data;
 }

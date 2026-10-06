@@ -228,9 +228,14 @@ function doPost(e) {
     if (action === 'register')       return handleRegister(body);
     if (action === 'login')          return handleLogin(body);
     if (action === 'forgotPassword') return handleForgotPassword(body);
+    if (action === 'join')           return handleJoin(body); // トークンは handleJoin 内で検証
 
     const userId = verifyToken(body.token);
     if (!userId) return errorResponse('認証失敗', 401);
+
+    // 読み取り系（ポーリング）はレート制限の対象外
+    if (action === 'getUsers')    return jsonResponse(getActiveUsers(userId));
+    if (action === 'getRoomLink') return jsonResponse(handleGetRoomLink(body));
 
     // 会議リンク保存は位置更新と別枠のレート制限
     if (action === 'setRoomLink') {

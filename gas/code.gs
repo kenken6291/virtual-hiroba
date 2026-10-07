@@ -19,7 +19,8 @@ const CFG = {
   MIN_PASSWORD_LEN:   8,
   AUTH_RATE_LIMIT_SEC: 3,
   GEMINI_API_KEY_PROP: 'GEMINI_API_KEY',
-  GEMINI_MODEL:       'gemini-3.6-flash',
+  GEMINI_MODEL_PROP:  'GEMINI_MODEL',     // スクリプトプロパティ：表情判定・文字起こし用モデル
+  TTS_MODEL_PROP:     'GEMINI_TTS_MODEL', // スクリプトプロパティ：読み上げ用モデル
   MAX_AUDIO_BASE64_LEN: 4000000, // 約3MB相当（15秒程度の音声を想定）
   MAP_IDS:            ['bright', 'park', 'cafe', 'dark'], // マップ（別空間）
   DEFAULT_MAP_ID:     'bright',
@@ -29,7 +30,6 @@ const CFG = {
   MAX_FACE_LEN:       60000,   // 顔画像1枚あたりのdataURL最大長（128px JPEGで通常1万前後）
   FACE_VER_PREFIX:    'fv_',   // スクリプトプロパティ：顔画像のバージョン（更新時刻）
   // ── 声（読み上げ）: Gemini 3.8 Flash-Lite TTS ──
-  TTS_MODEL:          'gemini-3.8-flash-lite-tts',
   TTS_ENDPOINT:       'https://generativelanguage.googleapis.com/v1beta/interactions',
   TTS_SAMPLE_RATE:    16000,   // 16kHz WAV（会話には十分・データ量を抑える）
   TTS_CACHE_SEC:      120,     // 生成した音声をキャッシュに置いておく秒数
@@ -425,9 +425,10 @@ function classifyExpression(text) {
 
 function classifyExpressionByGemini(text) {
   const apiKey = PropertiesService.getScriptProperties().getProperty(CFG.GEMINI_API_KEY_PROP);
-  if (!apiKey || !text) return null;
+  const model  = getGeminiModel();
+  if (!apiKey || !text || !model) return null;
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
-    CFG.GEMINI_MODEL + ':generateContent?key=' + apiKey;
+    model + ':generateContent?key=' + apiKey;
   const prompt =
     '次の発言をした人の表情として最も近いものを1つ選び、その英単語だけを答えてください。\n' +
     '選択肢: normal（普通）, smile（笑顔・嬉しい・楽しい）, surprised（驚き）, troubled（困った・悲しい・疲れた）\n' +
@@ -646,9 +647,11 @@ function handleTranscribeAudio(userId, body) {
   }
   const apiKey = PropertiesService.getScriptProperties().getProperty(CFG.GEMINI_API_KEY_PROP);
   if (!apiKey) return errorResponse('サーバー側でGemini APIキーが未設定です。setGeminiApiKey()を実行してください。');
+  const model = getGeminiModel();
+  if (!model) return errorResponse('サーバー側でGeminiモデルが未設定です。setGeminiModel()を実行してください。');
 
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
-    CFG.GEMINI_MODEL + ':generateContent?key=' + apiKey;
+    model + ':generateContent?key=' + apiKey;
   const payload = {
     contents: [{
       parts: [
@@ -686,6 +689,34 @@ function setGeminiApiKey() {
   const YOUR_API_KEY_HERE = 'ここに取得したGemini APIキーを貼り付け';
   PropertiesService.getScriptProperties().setProperty(CFG.GEMINI_API_KEY_PROP, YOUR_API_KEY_HERE);
   Logger.log('✅ Gemini APIキーを保存しました');
+}
+
+// ── 使用するGeminiモデル（スクリプトプロパティで指定） ──
+//   GEMINI_MODEL     : 表情判定・音声の文字起こし
+//   GEMINI_TTS_MODEL : コメントの読み上げ（TTS）
+// モデルを変えるときは、下の2行を書き換えて setGeminiModel を実行するだけでOK。
+// （「プロジェクトの設定 → スクリプト プロパティ」から直接編集しても構いません）
+function setGeminiModel() {
+  const MODEL     = 'gemini-3.8-flash';
+  const TTS_MODEL = 'gemini-3.8-flash-lite-tts';
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty(CFG.GEMINI_MODEL_PROP, MODEL);
+  props.setProperty(CFG.TTS_MODEL_PROP, TTS_MODEL);
+  Logger.log('✅ モデルを保存しました: ' + MODEL + ' / ' + TTS_MODEL);
+}
+
+function getGeminiModel() {
+  return String(PropertiesService.getScriptProperties().getProperty(CFG.GEMINI_MODEL_PROP) || '').trim();
+}
+
+function getTtsModel() {
+  return String(PropertiesService.getScriptProperties().getProperty(CFG.TTS_MODEL_PROP) || '').trim();
+}
+
+// 現在の設定を確認する（ログに表示）
+function showGeminiModel() {
+  Logger.log('GEMINI_MODEL     = ' + (getGeminiModel() || '（未設定）'));
+  Logger.log('GEMINI_TTS_MODEL = ' + (getTtsModel() || '（未設定）'));
 }
 
 // ============================================================
@@ -806,10 +837,12 @@ function getVoiceCache(uid, key) {
 function generateSpeech(text, voice, style) {
   const apiKey = PropertiesService.getScriptProperties().getProperty(CFG.GEMINI_API_KEY_PROP);
   if (!apiKey) return { ok: false, error: 'サーバー側でGemini APIキーが未設定です' };
+  const ttsModel = getTtsModel();
+  if (!ttsModel) return { ok: false, error: 'サーバー側で読み上げモデルが未設定です。setGeminiModel()を実行してください。' };
   const part = { type: 'text', text: String(text).slice(0, 200) };
   if (style) part.annotations = [{ type: 'speech_metadata', style }];
   const payload = {
-    model: CFG.TTS_MODEL,
+    model: ttsModel,
     input: [{ type: 'user_input', content: [part] }],
     response_format: { type: 'audio', mime_type: 'audio/wav', sample_rate: CFG.TTS_SAMPLE_RATE },
     generation_config: { speech_config: [{ voice }] },

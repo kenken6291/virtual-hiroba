@@ -10,6 +10,7 @@ GASは1つだけ（会議リンク共有も統合済み）。GitHub Secrets・co
    - `initSecret`
    - `initPepper`
    - `setGeminiApiKey`（実行前にAPIキーを書き込む）
+   - `setGeminiModel`（使うモデル名をスクリプトプロパティに保存。実行前に関数内の2行を確認）
 4. トリガー追加：`cleanupExpired` / 時間主導型 / 10分おき
 5. デプロイ → 新しいデプロイ → ウェブアプリ
    - 次のユーザーとして実行：自分
@@ -58,7 +59,11 @@ const GAS_URL = 'ここにGASのウェブアプリURLを貼り付け';
 - **音声会話モード**（声の設定画面のチェック）：🎤で話す → 文字起こし → 自動送信 → 声で再生。
 - 音声はコメント1件につき1回だけ生成し、GASのキャッシュに2分間置いて、聞く人はそれを取りに来ます（Gemini呼び出しは人数分増えません）。
 - 声の設定はスクリプトプロパティ `vc_<userId>` に保存。`users` シートに `voiceKey` 列が自動で追加されます。
-- 使用モデル：`gemini-3.8-flash-lite-tts`（code.gs の `CFG.TTS_MODEL`）。APIキーは既存の `setGeminiApiKey` と共通です。
+- 使用モデルはスクリプトプロパティで指定します（APIキーは既存の `setGeminiApiKey` と共通）。
+  - `GEMINI_MODEL`：表情判定・文字起こし（例：`gemini-3.8-flash`）
+  - `GEMINI_TTS_MODEL`：読み上げ（例：`gemini-3.8-flash-lite-tts`）
+  - `setGeminiModel` を実行すると両方を保存します。「プロジェクトの設定 → スクリプト プロパティ」から直接書き換えてもOK（デプロイし直し不要）。
+  - 今の設定は `showGeminiModel` でログに表示できます。
 
 ### 動作確認
 GASエディタで `testTts` を実行し、ログに「✅ OK: audio/wav ...」と出ればTTSは使えます。

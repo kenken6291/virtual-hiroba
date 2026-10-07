@@ -1240,7 +1240,7 @@ let myExpr = 'normal';                 // 自分の表情（コメント内容�
 // GASとの通信はすべてPOSTで行う
 // （GETはGoogle側のリダイレクトで404になる環境があるため）
 // スマホ回線向けに、タイムアウトと自動リトライを入れている。
-const API_TIMEOUT_MS = 15000;
+const API_TIMEOUT_MS = 30000; // GASは更新直後や久しぶりの呼び出しで起動に時間がかかることがある
 // AI（Gemini）を呼ぶ処理は時間がかかるので待ち時間を長めにする
 const SLOW_TIMEOUT_MS = {
   previewVoice:    60000,

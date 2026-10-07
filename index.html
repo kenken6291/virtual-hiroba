@@ -1241,6 +1241,14 @@ let myExpr = 'normal';                 // 自分の表情（コメント内容�
 // （GETはGoogle側のリダイレクトで404になる環境があるため）
 // スマホ回線向けに、タイムアウトと自動リトライを入れている。
 const API_TIMEOUT_MS = 15000;
+// AI（Gemini）を呼ぶ処理は時間がかかるので待ち時間を長めにする
+const SLOW_TIMEOUT_MS = {
+  previewVoice:    60000,
+  speakComment:    60000,
+  getVoice:        30000,
+  transcribeAudio: 60000,
+  sendComment:     30000,
+};
 // 2回送っても問題ない処理だけリトライする（メール送信・コメント投稿などは除外）
 const RETRY_ACTIONS = new Set(['login','join','getUsers','getRoomLink','updatePosition','leave','changePassword','updateNickname','setRoomLink']);
 
@@ -1250,7 +1258,7 @@ async function apiGet(params) {
 
 async function apiPostOnce(b) {
   const ctrl = new AbortController();
-  const tid = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+  const tid = setTimeout(() => ctrl.abort(), SLOW_TIMEOUT_MS[b.action] || API_TIMEOUT_MS);
   try {
     const res = await fetch(GAS_URL, {
       method:   'POST',
@@ -2602,7 +2610,8 @@ document.getElementById('voice-preview').addEventListener('click', async () => {
     stopAllVoices();
     enqueueVoice({ key:'', audio: res.audio, sampleRate: res.sampleRate, volume: 1 });
   } catch (e) {
-    setAuthMsg('voice-msg', 'サーバーへの接続に失敗しました', 'err');
+    console.error('previewVoice', e);
+    setAuthMsg('voice-msg', '試聴に失敗しました：' + (e.message || e), 'err');
   } finally {
     btn.disabled = false; btn.textContent = '▶ 試聴';
   }
@@ -2620,7 +2629,8 @@ document.getElementById('voice-save').addEventListener('click', async () => {
     toast('✅ 声を保存しました：' + voiceLabel(myVoice));
     enterProfileView();
   } catch (e) {
-    setAuthMsg('voice-msg', 'サーバーへの接続に失敗しました', 'err');
+    console.error('setVoice', e);
+    setAuthMsg('voice-msg', '保存に失敗しました：' + (e.message || e), 'err');
   } finally {
     btn.disabled = false; btn.textContent = '💾 保存する';
   }

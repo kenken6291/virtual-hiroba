@@ -181,6 +181,23 @@ body {
   animation: mic-pulse 1s infinite;
 }
 @keyframes mic-pulse { 0%,100%{opacity:1} 50%{opacity:.55} }
+#chat-spk {
+  background: var(--border);
+  border: 1px solid #3a3a70;
+  color: var(--text);
+  font-size: 13px;
+  padding: 0 9px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#chat-spk.off { opacity: .55; }
+/* 声で話している人の吹き出し */
+.speech-bubble.speaking {
+  box-shadow: 0 0 0 2px var(--accent), 0 2px 10px rgba(0,0,0,.45);
+  animation: bubble-talk .5s ease-in-out infinite alternate;
+}
+.speech-bubble.speaking::before { content: '🔊 '; }
+@keyframes bubble-talk { from { filter: brightness(1); } to { filter: brightness(1.08); } }
 
 /* ════════════════════════════════════════
    DESKTOP SIDEBAR (≥ 640px)
@@ -674,6 +691,45 @@ body {
 }
 
 /* ════════════════════════════════════════
+   声の設定
+════════════════════════════════════════ */
+.voice-current {
+  font-size: 9px;
+  color: var(--dim);
+  text-align: center;
+  margin: -8px 0 14px;
+}
+#voice-select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  border-radius: 0;
+  outline: none;
+}
+#voice-select:focus { border-color: var(--accent); }
+.voice-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.voice-row .btn { margin: 0; }
+.voice-row .btn.sub { width: 45%; flex-shrink: 0; }
+.voice-check {
+  display: flex !important;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 10px !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+  color: var(--text) !important;
+  line-height: 1.6;
+  margin: 0 0 14px !important;
+  cursor: pointer;
+}
+.voice-check input { margin-top: 3px; accent-color: var(--accent); }
+
+/* ════════════════════════════════════════
    顔の登録
 ════════════════════════════════════════ */
 .btn.sub {
@@ -799,10 +855,28 @@ body {
         <button class="btn" id="nick-edit-save" style="margin-bottom:0;">保存</button>
       </div>
       <button class="btn sub" id="face-edit-btn">😊 顔（表情）を登録する</button>
+      <button class="btn sub" id="voice-edit-btn">🗣 声（しゃべり）を設定する</button>
+      <div class="voice-current" id="voice-current">🗣 いまの声：声なし</div>
       <label>アバターカラー</label>
       <div class="color-row" id="color-row"></div>
       <button class="btn" id="enter-btn">▶ 入室する</button>
       <span class="auth-link" id="logout-link">ログアウト</span>
+    </div>
+
+    <!-- 声（しゃべり）の設定 -->
+    <div class="auth-view" data-view="voice">
+      <div class="auth-msg" id="voice-msg"></div>
+      <label>声の種類</label>
+      <select id="voice-select"></select>
+      <div class="voice-row">
+        <button class="btn sub" id="voice-preview">▶ 試聴</button>
+        <button class="btn" id="voice-save">💾 保存する</button>
+      </div>
+      <label class="voice-check">
+        <input type="checkbox" id="voice-autosend">
+        <span>音声会話モード：🎤で話すと、文字起こし後に確認なしで自動送信します（この端末だけの設定）</span>
+      </label>
+      <span class="auth-link" id="voice-back">戻る</span>
     </div>
 
     <!-- 顔（表情）の登録 -->
@@ -878,6 +952,7 @@ body {
     <!-- コメント入力バー -->
     <div id="chat-bar">
       <input id="chat-input" type="text" maxlength="40" placeholder="ひとことコメント...">
+      <button id="chat-spk" title="みんなの声">🔊</button>
       <button id="chat-mic" title="音声入力">🎤</button>
       <button id="chat-send">送信</button>
     </div>
@@ -903,7 +978,8 @@ body {
     <div id="players-list"></div>
     <div id="hints">
       <span class="key">↑↓←→</span> / <span class="key">WASD</span> で移動<br>
-      下のコメント欄からひとこと送信できます
+      下のコメント欄からひとこと送信できます<br>
+      🗣 声を設定するとコメントをしゃべります。🔊で近くの人の声のON/OFF
     </div>
   </div>
 </div>
@@ -1465,6 +1541,7 @@ function updateBubbles(ox, oy) {
       bubbleEls[key] = el;
     }
     if (el.textContent !== text) el.textContent = text;
+    el.classList.toggle('speaking', speakingNow.has(key));
     const a = anim[key];
     const sx = (a ? a.x : x) * TILE + ox, sy = (a ? a.y : y) * TILE + oy;
     el.style.left = (sx + TILE / 2) + 'px';
@@ -1757,6 +1834,7 @@ async function pollUsers() {
     badge.textContent = here === cnt + 1 ? `● ${here} online` : `● ${here}/${cnt+1} online`;
     badge.title = `このマップ ${here}人 / 全体 ${cnt+1}人`;
     updatePlayersList();
+    syncVoices();
     document.getElementById('st-api').textContent = 'OK';
   } catch(e) { document.getElementById('st-api').textContent='ERR'; }
 }
@@ -2204,11 +2282,16 @@ async function sendComment(text) {
   try {
     const res = await apiPost({ action:'sendComment', text: trimmed });
     if (!res.ok) toast('⚠️ ' + (res.error ?? 'コメントの送信に失敗しました'));
-    else if (res.expression && myComment === trimmed) myExpr = res.expression; // サーバー（AI）の判定で上書き
+    else {
+      if (res.expression && myComment === trimmed) myExpr = res.expression; // サーバー（AI）の判定で上書き
+      if (typeof res.voice === 'string') myVoice = res.voice;
+      if (myVoice) speakMyComment(); // 自分の声で読み上げ（みんなにも届く）
+    }
   } catch(e) { console.warn('sendComment', e); }
 }
 
 document.getElementById('chat-send').addEventListener('click', () => {
+  unlockAudio();
   const input = document.getElementById('chat-input');
   sendComment(input.value);
   input.value = '';
@@ -2229,6 +2312,7 @@ let audioChunks = [];
 const chatMicBtn = document.getElementById('chat-mic');
 
 async function toggleVoiceInput() {
+  unlockAudio();
   if (mediaRecorder && mediaRecorder.state === 'recording') {
     mediaRecorder.stop();
     return;
@@ -2279,6 +2363,12 @@ async function transcribeAndFill(blob, mimeType) {
     const audioBase64 = await blobToBase64(blob);
     const res = await apiPost({ action:'transcribeAudio', audioBase64, mimeType });
     if (!res.ok) { toast('⚠️ ' + (res.error ?? '文字起こしに失敗しました')); return; }
+    if (autoSend) {
+      document.getElementById('chat-input').value = '';
+      sendComment(res.text);
+      toast('🗣 「' + res.text + '」');
+      return;
+    }
     document.getElementById('chat-input').value = res.text;
     document.getElementById('chat-input').focus();
     toast('✅ 文字起こし完了。内容を確認して送信してください');
@@ -2289,6 +2379,252 @@ async function transcribeAndFill(blob, mimeType) {
 }
 
 chatMicBtn.addEventListener('click', toggleVoiceInput);
+
+
+// ============================================================
+// 声（しゃべり）: Gemini 3.8 Flash-Lite TTS
+//   ・プロフィールで声を選ぶ → コメントを送るとその声で読み上げ
+//   ・同じマップの近くにいる人の声が聞こえる（遠いほど小さく）
+//   ・音声会話モード：🎤で話す → 文字起こし → 自動送信 → 声で再生
+// ============================================================
+const VOICES = [
+  // 女性系
+  { id:'Kore',          g:'女性', d:'しっかり' },
+  { id:'Zephyr',        g:'女性', d:'明るい' },
+  { id:'Leda',          g:'女性', d:'若々しい' },
+  { id:'Aoede',         g:'女性', d:'さわやか' },
+  { id:'Callirrhoe',    g:'女性', d:'おおらか' },
+  { id:'Autonoe',       g:'女性', d:'明るい' },
+  { id:'Despina',       g:'女性', d:'なめらか' },
+  { id:'Erinome',       g:'女性', d:'はっきり' },
+  { id:'Laomedeia',     g:'女性', d:'元気' },
+  { id:'Achernar',      g:'女性', d:'やわらか' },
+  { id:'Gacrux',        g:'女性', d:'落ち着いた大人' },
+  { id:'Pulcherrima',   g:'女性', d:'前向き' },
+  { id:'Vindemiatrix',  g:'女性', d:'やさしい' },
+  { id:'Sulafat',       g:'女性', d:'あたたかい' },
+  // 男性系
+  { id:'Puck',          g:'男性', d:'元気' },
+  { id:'Charon',        g:'男性', d:'説明上手' },
+  { id:'Fenrir',        g:'男性', d:'ノリがいい' },
+  { id:'Orus',          g:'男性', d:'しっかり' },
+  { id:'Enceladus',     g:'男性', d:'息まじり' },
+  { id:'Iapetus',       g:'男性', d:'はっきり' },
+  { id:'Umbriel',       g:'男性', d:'おおらか' },
+  { id:'Algieba',       g:'男性', d:'なめらか' },
+  { id:'Algenib',       g:'男性', d:'しぶい' },
+  { id:'Rasalgethi',    g:'男性', d:'説明上手' },
+  { id:'Alnilam',       g:'男性', d:'しっかり' },
+  { id:'Schedar',       g:'男性', d:'落ち着き' },
+  { id:'Achird',        g:'男性', d:'フレンドリー' },
+  { id:'Zubenelgenubi', g:'男性', d:'カジュアル' },
+  { id:'Sadachbia',     g:'男性', d:'いきいき' },
+  { id:'Sadaltager',    g:'男性', d:'ものしり' },
+];
+const HEAR_RANGE  = 14;     // このマス数より遠い人の声は聞こえない
+const VOICE_FRESH_MS = 15000; // これより古いコメントの声は再生しない
+let myVoice = '';           // 自分の声（''=声なし）
+
+// ── 設定（この端末だけに保存） ──
+function prefGet(k, def) { try { const v = localStorage.getItem(k); return v === null ? def : v === '1'; } catch (e) { return def; } }
+function prefSet(k, v)   { try { localStorage.setItem(k, v ? '1' : '0'); } catch (e) {} }
+let listenOn = prefGet('vh_listen', true);    // 他の人の声を聞く
+let autoSend = prefGet('vh_autosend', false); // 音声会話モード
+
+function voiceLabel(id) {
+  const v = VOICES.find(x => x.id === id);
+  return v ? `${v.g}・${v.d}（${v.id}）` : '声なし';
+}
+
+// ── 再生エンジン（Web Audio。入室ボタンのタップで有効化） ──
+let audioCtx = null;
+function unlockAudio() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    // iOS向け：無音を一瞬鳴らしてロック解除
+    const b = audioCtx.createBuffer(1, 1, 22050), s = audioCtx.createBufferSource();
+    s.buffer = b; s.connect(audioCtx.destination); s.start(0);
+  } catch (e) { console.warn('unlockAudio', e); }
+}
+
+// base64 → WAVのArrayBuffer（ヘッダーが無い生PCMなら包む）
+function b64ToWav(b64, sampleRate) {
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  if (u8.length > 4 && u8[0] === 0x52 && u8[1] === 0x49 && u8[2] === 0x46 && u8[3] === 0x46) return u8.buffer; // "RIFF"
+  const sr = sampleRate || 16000, len = u8.length;
+  const buf = new ArrayBuffer(44 + len), dv = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  w(0,'RIFF'); dv.setUint32(4, 36 + len, true); w(8,'WAVE'); w(12,'fmt ');
+  dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true);
+  dv.setUint32(24,sr,true); dv.setUint32(28,sr*2,true); dv.setUint16(32,2,true); dv.setUint16(34,16,true);
+  w(36,'data'); dv.setUint32(40,len,true);
+  new Uint8Array(buf, 44).set(u8);
+  return buf;
+}
+
+// 順番に再生するキュー
+const voiceQueue = [];
+let voicePlaying = false;
+const speakingNow = new Set(); // 今しゃべっている人（吹き出しを光らせる）
+
+function enqueueVoice(item) {
+  if (voiceQueue.length >= 4) voiceQueue.shift(); // 溜まりすぎたら古いものを捨てる
+  voiceQueue.push(item);
+  playNextVoice();
+}
+
+async function playNextVoice() {
+  if (voicePlaying || !voiceQueue.length) return;
+  if (!audioCtx) { voiceQueue.length = 0; return; }
+  voicePlaying = true;
+  const item = voiceQueue.shift();
+  try {
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const ab = await audioCtx.decodeAudioData(b64ToWav(item.audio, item.sampleRate));
+    const src = audioCtx.createBufferSource();
+    const gain = audioCtx.createGain();
+    gain.gain.value = Math.max(0, Math.min(1, item.volume ?? 1));
+    src.buffer = ab;
+    src.connect(gain).connect(audioCtx.destination);
+    if (item.key) speakingNow.add(item.key);
+    await new Promise(res => { src.onended = res; src.start(0); });
+  } catch (e) {
+    console.warn('playVoice', e);
+  } finally {
+    if (item.key) speakingNow.delete(item.key);
+    voicePlaying = false;
+    playNextVoice();
+  }
+}
+
+function stopAllVoices() {
+  voiceQueue.length = 0;
+  speakingNow.clear();
+}
+
+// 自分のコメントを自分の声で読み上げ（生成はサーバーで1回だけ）
+async function speakMyComment() {
+  if (!myVoice) return;
+  try {
+    const res = await apiPost({ action:'speakComment' });
+    if (!res.ok) {
+      if (res.reason !== 'empty') console.warn('speakComment', res.error);
+      return;
+    }
+    heardVoices.add('self:' + res.key);
+    enqueueVoice({ key:'self', audio: res.audio, sampleRate: res.sampleRate, volume: 1 });
+  } catch (e) { console.warn('speakComment', e); }
+}
+
+// ほかの人の声：ポーリングで voiceKey が付いたら取りに行く
+const heardVoices = new Set();
+async function syncVoices() {
+  const now = Date.now();
+  for (const [uid, u] of Object.entries(otherUsers)) {
+    if (!u.voiceKey) continue;
+    const id = uid + ':' + u.voiceKey;
+    if (heardVoices.has(id)) continue;
+    heardVoices.add(id);
+    if (!listenOn || !audioCtx) continue;
+    if (u.mapId !== currentMapId) continue;
+    if (now - Number(u.voiceKey) > VOICE_FRESH_MS) continue;
+    const d = dist2D({ x:myX, y:myY }, u);
+    if (d > HEAR_RANGE) continue;
+    const volume = d <= 3 ? 1 : Math.max(0.15, 1 - (d - 3) / (HEAR_RANGE - 3));
+    apiPost({ action:'getVoice', userId: uid, key: u.voiceKey }).then(res => {
+      if (res.ok && listenOn) enqueueVoice({ key: uid, audio: res.audio, sampleRate: res.sampleRate, volume });
+    }).catch(e => console.warn('getVoice', e));
+  }
+  if (heardVoices.size > 500) heardVoices.clear();
+}
+
+// ── 🔊 ボタン（他の人の声を聞く／聞かない） ──
+const chatSpkBtn = document.getElementById('chat-spk');
+function renderSpkBtn() {
+  chatSpkBtn.textContent = listenOn ? '🔊' : '🔇';
+  chatSpkBtn.classList.toggle('off', !listenOn);
+  chatSpkBtn.title = listenOn ? 'みんなの声：ON（タップでOFF）' : 'みんなの声：OFF（タップでON）';
+}
+chatSpkBtn.addEventListener('click', () => {
+  unlockAudio();
+  listenOn = !listenOn;
+  prefSet('vh_listen', listenOn);
+  if (!listenOn) stopAllVoices();
+  renderSpkBtn();
+  toast(listenOn ? '🔊 近くの人の声が聞こえます' : '🔇 声をミュートしました');
+});
+renderSpkBtn();
+
+// ── 声の設定画面 ──
+function buildVoiceSelect() {
+  const sel = document.getElementById('voice-select');
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = ''; none.textContent = '声なし（読み上げない）';
+  sel.appendChild(none);
+  for (const g of ['女性', '男性']) {
+    const og = document.createElement('optgroup');
+    og.label = g + 'の声';
+    for (const v of VOICES.filter(x => x.g === g)) {
+      const o = document.createElement('option');
+      o.value = v.id; o.textContent = `${v.d}（${v.id}）`;
+      og.appendChild(o);
+    }
+    sel.appendChild(og);
+  }
+}
+function renderVoiceSummary() {
+  document.getElementById('voice-current').textContent = '🗣 いまの声：' + voiceLabel(myVoice);
+}
+function openVoiceEditor() {
+  unlockAudio();
+  buildVoiceSelect();
+  document.getElementById('voice-select').value = myVoice;
+  document.getElementById('voice-autosend').checked = autoSend;
+  setAuthMsg('voice-msg', '声を選んで「試聴」で確認できます。コメントを送ると、この声でしゃべります。');
+  showAuthView('voice');
+}
+document.getElementById('voice-edit-btn').addEventListener('click', openVoiceEditor);
+document.getElementById('voice-back').addEventListener('click', enterProfileView);
+document.getElementById('voice-preview').addEventListener('click', async () => {
+  unlockAudio();
+  const voice = document.getElementById('voice-select').value;
+  if (!voice) { setAuthMsg('voice-msg', '声を選んでください', 'err'); return; }
+  const btn = document.getElementById('voice-preview');
+  btn.disabled = true; btn.textContent = '⏳ 生成中...';
+  try {
+    const res = await apiPost({ action:'previewVoice', voice });
+    if (!res.ok) { setAuthMsg('voice-msg', res.error ?? '試聴に失敗しました', 'err'); return; }
+    setAuthMsg('voice-msg', '▶ ' + voiceLabel(voice) + ' を再生中', 'ok');
+    stopAllVoices();
+    enqueueVoice({ key:'', audio: res.audio, sampleRate: res.sampleRate, volume: 1 });
+  } catch (e) {
+    setAuthMsg('voice-msg', 'サーバーへの接続に失敗しました', 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = '▶ 試聴';
+  }
+});
+document.getElementById('voice-save').addEventListener('click', async () => {
+  const voice = document.getElementById('voice-select').value;
+  autoSend = document.getElementById('voice-autosend').checked;
+  prefSet('vh_autosend', autoSend);
+  const btn = document.getElementById('voice-save');
+  btn.disabled = true; btn.textContent = '保存中...';
+  try {
+    const res = await apiPost({ action:'setVoice', voice });
+    if (!res.ok) { setAuthMsg('voice-msg', res.error ?? '保存に失敗しました', 'err'); return; }
+    myVoice = res.voice || '';
+    toast('✅ 声を保存しました：' + voiceLabel(myVoice));
+    enterProfileView();
+  } catch (e) {
+    setAuthMsg('voice-msg', 'サーバーへの接続に失敗しました', 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = '💾 保存する';
+  }
+});
 
 // ============================================================
 // プレイヤーリスト更新 (デスクトップ & モバイル共通)
@@ -2347,6 +2683,7 @@ function doLeave() {
   otherUsers = {};
   for (const k of Object.keys(anim)) delete anim[k];
   myComment = ''; myCommentAt = 0; myExpr = 'normal';
+  stopAllVoices();
   currentRoom = null;
   clearInterval(roomLinkPollTid);
   roomLinkPollTid = null;
@@ -2428,6 +2765,7 @@ document.getElementById('login-btn').addEventListener('click', async () => {
     else {
       myId = res.userId; myToken = res.token;
       myName = res.nickname; myColor = res.avatarColor || AVATAR_COLORS[0];
+      myVoice = res.voice || '';
       setAuthMsg('login-msg','');
       document.getElementById('login-password').value = '';
       if (res.mustChangePassword) {
@@ -2477,6 +2815,7 @@ document.getElementById('changepw-btn').addEventListener('click', async () => {
 function enterProfileView() {
   document.getElementById('profile-name').textContent = '👤 ' + myName;
   showAuthView('enter');
+  renderVoiceSummary();
   if (myId && !faceStore[myId]) loadFaces([myId]);
 }
 document.getElementById('nick-edit-link').addEventListener('click', () => {
@@ -2497,7 +2836,7 @@ document.getElementById('nick-edit-save').addEventListener('click', async () => 
   } catch(e) { toast('⚠️ サーバーへの接続に失敗しました'); console.error(e); }
 });
 document.getElementById('logout-link').addEventListener('click', () => {
-  myId = null; myToken = null;
+  myId = null; myToken = null; myVoice = '';
   document.getElementById('login-password').value = '';
   showAuthView('login');
 });
@@ -2518,6 +2857,7 @@ function buildColorPicker() {
 
 document.getElementById('enter-btn').addEventListener('click', async () => {
   if (!myToken) { toast('ログインしてください'); showAuthView('login'); return; }
+  unlockAudio(); // このタップで音声再生を有効化（スマホの自動再生制限対策）
   const btn = document.getElementById('enter-btn');
   btn.disabled=true; btn.textContent='接続中...';
   try {
@@ -2529,6 +2869,7 @@ document.getElementById('enter-btn').addEventListener('click', async () => {
       return;
     }
     myId=res.userId; myToken=res.token; myName=res.name;
+    if (typeof res.voice === 'string') myVoice = res.voice;
 
     const sp = randomFloor();
     myX=sp.x; myY=sp.y;

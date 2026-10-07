@@ -28,6 +28,26 @@ const CFG = {
   EXPRESSIONS:        ['normal', 'smile', 'surprised', 'troubled'], // 普通/笑った/驚いた/困った
   MAX_FACE_LEN:       60000,   // 顔画像1枚あたりのdataURL最大長（128px JPEGで通常1万前後）
   FACE_VER_PREFIX:    'fv_',   // スクリプトプロパティ：顔画像のバージョン（更新時刻）
+  // ── 声（読み上げ）: Gemini 3.8 Flash-Lite TTS ──
+  TTS_MODEL:          'gemini-3.8-flash-lite-tts',
+  TTS_ENDPOINT:       'https://generativelanguage.googleapis.com/v1beta/interactions',
+  TTS_SAMPLE_RATE:    16000,   // 16kHz WAV（会話には十分・データ量を抑える）
+  TTS_CACHE_SEC:      120,     // 生成した音声をキャッシュに置いておく秒数
+  TTS_CHUNK_LEN:      90000,   // CacheServiceは1値100KBまでなので分割保存
+  TTS_MAX_B64_LEN:    1500000, // 念のための上限
+  VOICE_PREFIX:       'vc_',   // スクリプトプロパティ：会員ごとの声
+  // Geminiのプリセット音声（30種）
+  TTS_VOICES: ['Zephyr','Puck','Charon','Kore','Fenrir','Leda','Orus','Aoede','Callirrhoe','Autonoe',
+               'Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar',
+               'Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat'],
+};
+
+// 表情 → 話し方（speech_metadata.style）。普通の時は指定しない
+const EXPRESSION_STYLE = {
+  normal:    '',
+  smile:     'cheerful and happy',
+  surprised: 'surprised and excited',
+  troubled:  'troubled, a little sad',
 };
 
 const SHEETS = {
@@ -170,16 +190,16 @@ function getOrCreateSheet(name, headers) {
   return sheet;
 }
 
-const USERS_HEADERS = ['userId','name','x','y','avatarColor','lastSeen','comment','commentAt','mapId','expression'];
+const USERS_HEADERS = ['userId','name','x','y','avatarColor','lastSeen','comment','commentAt','mapId','expression','voiceKey'];
 
 function getUsersSheet() {
   const sheet = getOrCreateSheet(SHEETS.USERS, USERS_HEADERS);
-  // 既存シートに後から増えた列（mapId / expression）の見出しを1回だけ追加
+  // 既存シートに後から増えた列（mapId / expression / voiceKey）の見出しを1回だけ追加
   const cache = CacheService.getScriptCache();
-  if (!cache.get('users_hdr_v3')) {
+  if (!cache.get('users_hdr_v4')) {
     const hdr = sheet.getRange(1, 1, 1, USERS_HEADERS.length).getValues()[0];
     if (hdr.join() !== USERS_HEADERS.join()) sheet.getRange(1, 1, 1, USERS_HEADERS.length).setValues([USERS_HEADERS]);
-    cache.put('users_hdr_v3', '1', 21600);
+    cache.put('users_hdr_v4', '1', 21600);
   }
   return sheet;
 }
@@ -252,6 +272,21 @@ function doPost(e) {
     if (action === 'getUsers')    return jsonResponse(getActiveUsers(userId));
     if (action === 'getRoomLink') return jsonResponse(handleGetRoomLink(body));
     if (action === 'getFaces')    return jsonResponse(handleGetFaces(body));
+    if (action === 'getVoice')    return jsonResponse(handleGetVoice(body));
+
+    // 声の設定・試聴・読み上げ生成は別枠のレート制限
+    if (action === 'setVoice') {
+      if (!checkRateLimitKey('rl_vset:' + userId, 2)) return errorResponse('リクエストが速すぎます', 429);
+      return jsonResponse(handleSetVoice(userId, body));
+    }
+    if (action === 'previewVoice') {
+      if (!checkRateLimitKey('rl_vprev:' + userId, 3)) return errorResponse('少し待ってからもう一度試してください', 429);
+      return jsonResponse(handlePreviewVoice(userId, body));
+    }
+    if (action === 'speakComment') {
+      if (!checkRateLimitKey('rl_tts:' + userId, 2)) return errorResponse('リクエストが速すぎます', 429);
+      return jsonResponse(handleSpeakComment(userId));
+    }
 
     // 顔画像の保存は別枠のレート制限
     if (action === 'saveFaces') {
@@ -308,6 +343,7 @@ function handleJoin(p) {
   return jsonResponse({
     ok: true, userId, token,
     name: member.nickname, avatarColor: member.avatarColor,
+    voice: getUserVoice(userId),
   });
 }
 
@@ -349,8 +385,8 @@ function handleSendComment(userId, body) {
       const expression = classifyExpression(comment);
       const now = new Date().toISOString();
       sheet.getRange(i + 1, 7, 1, 2).setValues([[comment, now]]);
-      sheet.getRange(i + 1, 10).setValue(expression);
-      return { ok: true, expression };
+      sheet.getRange(i + 1, 10, 1, 2).setValues([[expression, '']]); // 前のコメントの声は外す
+      return { ok: true, expression, voice: getUserVoice(userId) };
     }
   }
   return { ok: false, error: '入室してください' };
@@ -514,6 +550,7 @@ function getActiveUsers(requesterId) {
         mapId:       validateMapId(data[i][8]),
         expression:  fresh ? validateExpression(data[i][9]) : 'normal',
         faceVer:     props[CFG.FACE_VER_PREFIX + data[i][0]] || '',
+        voiceKey:    fresh ? String(data[i][10] || '') : '',
       });
     }
   }
@@ -652,6 +689,184 @@ function setGeminiApiKey() {
 }
 
 // ============================================================
+// 声（読み上げ）: Gemini 3.8 Flash-Lite TTS
+//   ・会員ごとに声（プリセット30種）を選べる。未設定なら声なし
+//   ・コメント送信後に speakComment で1回だけ音声を生成し、
+//     キャッシュに置いて同じマップの人が getVoice で取りに来る
+// ============================================================
+function validateVoice(v) {
+  return CFG.TTS_VOICES.indexOf(String(v || '')) >= 0 ? String(v) : '';
+}
+
+function getUserVoice(userId) {
+  return validateVoice(PropertiesService.getScriptProperties().getProperty(CFG.VOICE_PREFIX + userId));
+}
+
+function handleSetVoice(userId, body) {
+  const raw = String(body.voice || '');
+  const voice = validateVoice(raw);
+  if (raw && !voice) return { ok: false, error: '声の種類が不正です' };
+  const props = PropertiesService.getScriptProperties();
+  if (voice) props.setProperty(CFG.VOICE_PREFIX + userId, voice);
+  else       props.deleteProperty(CFG.VOICE_PREFIX + userId);
+  return { ok: true, voice };
+}
+
+function handlePreviewVoice(userId, body) {
+  const voice = validateVoice(body.voice);
+  if (!voice) return { ok: false, error: '声を選んでください' };
+  const member = findMemberById(userId);
+  const name = member ? member.nickname : '';
+  const tts = generateSpeech('こんにちは。' + name + 'です。よろしくお願いします！', voice, 'cheerful and friendly');
+  if (!tts.ok) return tts;
+  return { ok: true, audio: tts.audio, mime: tts.mime, sampleRate: CFG.TTS_SAMPLE_RATE };
+}
+
+// 直前に送ったコメントを、その人の声で読み上げる
+function handleSpeakComment(userId) {
+  const voice = getUserVoice(userId);
+  if (!voice) return { ok: false, error: '声が設定されていません', reason: 'novoice' };
+  const sheet = getUsersSheet();
+  const data  = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] !== userId) continue;
+    const comment = String(data[i][6] || '');
+    const at = data[i][7] ? new Date(data[i][7]).getTime() : 0;
+    if (!comment || !at || Date.now() - at > CFG.COMMENT_TTL_MS) return { ok: false, error: 'コメントがありません' };
+    const text = textForSpeech(comment);
+    if (!text) return { ok: false, error: '読み上げる文字がありません', reason: 'empty' };
+    const expression = validateExpression(data[i][9]);
+    const tts = generateSpeech(text, voice, EXPRESSION_STYLE[expression] || '');
+    if (!tts.ok) return tts;
+    const key = String(at);
+    if (!putVoiceCache(userId, key, tts.audio, tts.mime)) return { ok: false, error: '音声の保存に失敗しました' };
+    // 生成中に次のコメントが送られていたら、古い音声は紐付けない
+    const cur = sheet.getRange(i + 1, 8).getValue();
+    if (cur && new Date(cur).getTime() === at) sheet.getRange(i + 1, 11).setValue(key);
+    return { ok: true, key, audio: tts.audio, mime: tts.mime, sampleRate: CFG.TTS_SAMPLE_RATE };
+  }
+  return { ok: false, error: '入室してください' };
+}
+
+function handleGetVoice(body) {
+  const uid = String(body.userId || '');
+  const key = String(body.key || '');
+  if (!/^[A-Za-z0-9_]{1,40}$/.test(uid) || !/^\d{1,16}$/.test(key)) return { ok: false, error: '指定が不正です' };
+  const v = getVoiceCache(uid, key);
+  if (!v) return { ok: false, error: '音声が見つかりません' };
+  return { ok: true, audio: v.audio, mime: v.mime, sampleRate: CFG.TTS_SAMPLE_RATE };
+}
+
+// 読み上げ用に整える（絵文字や「ww」は読ませない）
+function textForSpeech(s) {
+  return String(s || '')
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}\u{203C}\u{2049}]/gu, '')
+    .replace(/[wｗ]{2,}/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// ── キャッシュ（1値100KBの制限があるので分割して保存） ──
+function voiceCacheBase(uid, key) { return 'tts_' + uid + '_' + key; }
+
+function putVoiceCache(uid, key, audio, mime) {
+  try {
+    const base = voiceCacheBase(uid, key);
+    const items = {};
+    let n = 0;
+    for (let p = 0; p < audio.length; p += CFG.TTS_CHUNK_LEN) items[base + '_' + (n++)] = audio.slice(p, p + CFG.TTS_CHUNK_LEN);
+    items[base + '_m'] = JSON.stringify({ n, mime });
+    CacheService.getScriptCache().putAll(items, CFG.TTS_CACHE_SEC);
+    return true;
+  } catch (err) {
+    console.error('putVoiceCache:', err);
+    return false;
+  }
+}
+
+function getVoiceCache(uid, key) {
+  const cache = CacheService.getScriptCache();
+  const base = voiceCacheBase(uid, key);
+  const metaRaw = cache.get(base + '_m');
+  if (!metaRaw) return null;
+  let meta;
+  try { meta = JSON.parse(metaRaw); } catch (e) { return null; }
+  const keys = [];
+  for (let k = 0; k < meta.n; k++) keys.push(base + '_' + k);
+  const got = cache.getAll(keys);
+  let audio = '';
+  for (const k of keys) {
+    if (got[k] == null) return null;
+    audio += got[k];
+  }
+  return { audio, mime: meta.mime || 'audio/wav' };
+}
+
+// ── Gemini TTS 呼び出し（Interactions API） ──
+function generateSpeech(text, voice, style) {
+  const apiKey = PropertiesService.getScriptProperties().getProperty(CFG.GEMINI_API_KEY_PROP);
+  if (!apiKey) return { ok: false, error: 'サーバー側でGemini APIキーが未設定です' };
+  const part = { type: 'text', text: String(text).slice(0, 200) };
+  if (style) part.annotations = [{ type: 'speech_metadata', style }];
+  const payload = {
+    model: CFG.TTS_MODEL,
+    input: [{ type: 'user_input', content: [part] }],
+    response_format: { type: 'audio', mime_type: 'audio/wav', sample_rate: CFG.TTS_SAMPLE_RATE },
+    generation_config: { speech_config: [{ voice }] },
+  };
+  try {
+    const res = UrlFetchApp.fetch(CFG.TTS_ENDPOINT, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'x-goog-api-key': apiKey },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+    const code = res.getResponseCode();
+    if (code !== 200) {
+      console.error('Gemini TTS error:', code, res.getContentText().slice(0, 500));
+      return { ok: false, error: '音声の生成に失敗しました（' + code + '）' };
+    }
+    const found = findAudioInResponse(JSON.parse(res.getContentText()));
+    if (!found) {
+      console.error('Gemini TTS: 音声データが見つかりません', res.getContentText().slice(0, 500));
+      return { ok: false, error: '音声データが空でした' };
+    }
+    if (found.data.length > CFG.TTS_MAX_B64_LEN) return { ok: false, error: '音声が長すぎます' };
+    return { ok: true, audio: found.data, mime: found.mime };
+  } catch (err) {
+    console.error('generateSpeech:', err);
+    return { ok: false, error: '音声の生成中にエラーが発生しました' };
+  }
+}
+
+// 応答JSONから最後の音声データ（base64）を探す
+//   Interactions API: steps[].content[] の { type:'audio', data } / output_audio
+//   （念のため generateContent 形式の inlineData にも対応）
+function findAudioInResponse(obj) {
+  let last = null;
+  const walk = (o) => {
+    if (!o || typeof o !== 'object') return;
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    if (o.type === 'audio' && typeof o.data === 'string' && o.data) {
+      last = { data: o.data, mime: o.mime_type || o.mimeType || 'audio/wav' };
+    } else {
+      const d = o.inlineData || o.inline_data;
+      if (d && typeof d.data === 'string' && d.data) last = { data: d.data, mime: d.mimeType || d.mime_type || 'audio/wav' };
+    }
+    for (const k in o) if (k !== 'data') walk(o[k]);
+  };
+  walk(obj);
+  return last;
+}
+
+// 動作確認用（エディタで実行するとログに結果が出ます）
+function testTts() {
+  const r = generateSpeech('こんにちは。声のテストです。', 'Kore', 'cheerful and friendly');
+  Logger.log(r.ok ? ('✅ OK: ' + r.mime + ' / base64 ' + r.audio.length + '文字') : ('❌ ' + r.error));
+}
+
+// ============================================================
 // ACTION: register（会員登録・未ログインで呼び出し可）
 // ============================================================
 function handleRegister(body) {
@@ -711,6 +926,7 @@ function handleLogin(body) {
     ok: true, token, userId: member.id,
     nickname: member.nickname, avatarColor: member.avatarColor,
     mustChangePassword: member.mustChangePassword,
+    voice: getUserVoice(member.id),
   });
 }
 

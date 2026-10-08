@@ -1324,7 +1324,7 @@ async function apiPost(body) {
       if (data && data.newToken && b.token && b.token === myToken) { myToken = data.newToken; saveSession(); }
       if (!data.ok && data.code === 401) {
         // 古いトークンで送った後から届いた401は無視（その間に新しいトークンに替わっている）
-        if (!b.token || b.token === myToken) handleAuthError();
+        if (b.token && b.token === myToken) onAuth401(data, b.action);
       }
       return data;
     } catch (e) {
@@ -1345,9 +1345,48 @@ function sendLeaveBeacon() {
   fetch(GAS_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body: payload, keepalive: true }).catch(()=>{});
 }
 
-function handleAuthError() {
+// 401を受けたら、すぐにログアウトせず 'session' で本当に無効か確かめる
+// （一時的な不具合や、行き違いでの誤ったログアウトを防ぐ）
+let authChecking = null;
+const AUTH_REASON_TEXT = {
+  expired:   '有効期限切れ',
+  signature: 'サーバーの鍵が変わった',
+  format:    'ログイン情報が壊れている',
+  notoken:   'ログイン情報なし',
+  nomember:  'アカウントが見つからない',
+};
+function onAuth401(data, action) {
+  console.warn('401:', action, data.reason || '', data.error || '');
+  if (action === 'session') { handleAuthError(data.reason); return; }
+  if (authChecking) return;
+  const tokenAtStart = myToken;
+  authChecking = (async () => {
+    let lastReason = data.reason;
+    for (let i = 0; i < 2; i++) {
+      await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+      if (myToken !== tokenAtStart) return; // その間にトークンが替わった
+      try {
+        const res = await apiPostOnce({ action:'session', token: myToken });
+        if (res.ok) {
+          if (res.newToken && myToken === tokenAtStart) { myToken = res.newToken; saveSession(); }
+          console.info('401は一時的なものでした（ログインは有効）');
+          return;
+        }
+        if (res.code === 401) { lastReason = res.reason || lastReason; break; }
+      } catch (e) {
+        // 通信エラーのときはログアウトしない
+        console.warn('session check', e);
+        return;
+      }
+    }
+    if (myToken === tokenAtStart) handleAuthError(lastReason);
+  })().finally(() => { authChecking = null; });
+}
+
+function handleAuthError(reason) {
   if (!myToken) return; // 二重表示を防ぐ
-  toast('⚠️ ログインの有効期限が切れました。もう一度ログインしてください。');
+  const why = AUTH_REASON_TEXT[reason] ? '（' + AUTH_REASON_TEXT[reason] + '）' : '';
+  toast('⚠️ ログインし直してください' + why);
   stopPolling();
   stopAllVoices();
   if (typeof stopHandsFree === 'function') stopHandsFree(true);
@@ -3143,12 +3182,19 @@ initMapSelect();
   myToken = saved.token; myId = saved.userId;
   setAuthMsg('login-msg', 'ログイン状態を確認中...', 'ok');
   try {
-    const res = await apiPost({ action:'session' });
+    // ここは apiPostOnce を直接使う（無効だったときに警告を出さず、静かにログイン画面にする）
+    let res;
+    for (let i = 0; i < 2; i++) {
+      try { res = await apiPostOnce({ action:'session', token: myToken }); break; }
+      catch (e) { if (i === 1) throw e; await new Promise(r => setTimeout(r, 1000)); }
+    }
     if (!res.ok) {
       setAuthMsg('login-msg', '');
+      console.warn('restoreSession:', res.reason || '', res.error || '');
       if (res.code === 401) { myToken = null; myId = null; clearSession(); }
       return;
     }
+    if (res.newToken) { myToken = res.newToken; saveSession(); }
     myName = res.nickname; myColor = res.avatarColor || AVATAR_COLORS[0];
     myVoice = res.voice || '';
     setAuthMsg('login-msg', '');

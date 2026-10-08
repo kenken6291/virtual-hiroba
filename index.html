@@ -191,6 +191,21 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 #chat-spk.off { opacity: .55; }
+#chat-hf {
+  background: var(--border);
+  border: 1px solid #3a3a70;
+  color: var(--text);
+  font-size: 13px;
+  padding: 0 9px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#chat-hf.on        { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
+#chat-hf.listening { animation: hf-breathe 2s ease-in-out infinite; }
+#chat-hf.recording { background: var(--red); border-color: var(--red); box-shadow: none; animation: mic-pulse 1s infinite; }
+#chat-hf.busy      { opacity: .8; }
+#chat-hf.muted     { opacity: .6; }
+@keyframes hf-breathe { 0%,100% { background: var(--border); } 50% { background: rgba(61,220,132,.25); } }
 /* 声で話している人の吹き出し */
 .speech-bubble.speaking {
   box-shadow: 0 0 0 2px var(--accent), 0 2px 10px rgba(0,0,0,.45);
@@ -683,7 +698,8 @@ body {
     bottom: 42px;
   }
   #chat-input { font-size: 16px; padding: 8px 10px; } /* 16px未満だとiPhoneで入力時に拡大される */
-  #chat-mic   { padding: 0 12px; font-size: 16px; }
+  #chat-mic   { padding: 0 10px; font-size: 16px; }
+  #chat-hf, #chat-spk { padding: 0 8px; font-size: 15px; }
   #chat-send  { padding: 0 14px; font-size: 12px; }
   #dpad { bottom: 92px; }
   #room-badge { top: 10px; bottom: auto; left: 10px; }
@@ -953,6 +969,7 @@ body {
     <div id="chat-bar">
       <input id="chat-input" type="text" maxlength="40" placeholder="ひとことコメント...">
       <button id="chat-spk" title="みんなの声">🔊</button>
+      <button id="chat-hf" title="ハンズフリー会話">👂</button>
       <button id="chat-mic" title="音声入力">🎤</button>
       <button id="chat-send">送信</button>
     </div>
@@ -979,7 +996,8 @@ body {
     <div id="hints">
       <span class="key">↑↓←→</span> / <span class="key">WASD</span> で移動<br>
       下のコメント欄からひとこと送信できます<br>
-      🗣 声を設定するとコメントをしゃべります。🔊で近くの人の声のON/OFF
+      🗣 声を設定するとコメントをしゃべります。🔊で近くの人の声のON/OFF<br>
+      👂 ハンズフリー：ONにすると、話すだけで自動で送信されます
     </div>
   </div>
 </div>
@@ -1250,7 +1268,7 @@ const SLOW_TIMEOUT_MS = {
   sendComment:     30000,
 };
 // 2回送っても問題ない処理だけリトライする（メール送信・コメント投稿などは除外）
-const RETRY_ACTIONS = new Set(['login','join','getUsers','getRoomLink','updatePosition','leave','changePassword','updateNickname','setRoomLink']);
+const RETRY_ACTIONS = new Set(['login','session','join','getUsers','getRoomLink','updatePosition','leave','changePassword','updateNickname','setRoomLink']);
 
 async function apiGet(params) {
   return apiPost(params);
@@ -1282,6 +1300,18 @@ async function apiPostOnce(b) {
   }
 }
 
+// ── ログイン状態の保存（ページを開き直してもログインしたまま） ──
+const SESSION_KEY = 'vh_session';
+function saveSession() {
+  try { if (myToken && myId) localStorage.setItem(SESSION_KEY, JSON.stringify({ token: myToken, userId: myId })); } catch (e) {}
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+}
+function loadSession() {
+  try { const v = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); return v && v.token && v.userId ? v : null; } catch (e) { return null; }
+}
+
 async function apiPost(body) {
   const b = { ...body };
   if (myToken) b.token = myToken;
@@ -1290,7 +1320,12 @@ async function apiPost(body) {
   for (let i = 0; i < tries; i++) {
     try {
       const data = await apiPostOnce(b);
-      if (!data.ok && data.code === 401) handleAuthError();
+      // サーバーが自動更新したトークンに差し替える（送ったトークンが今のものと同じときだけ）
+      if (data && data.newToken && b.token && b.token === myToken) { myToken = data.newToken; saveSession(); }
+      if (!data.ok && data.code === 401) {
+        // 古いトークンで送った後から届いた401は無視（その間に新しいトークンに替わっている）
+        if (!b.token || b.token === myToken) handleAuthError();
+      }
       return data;
     } catch (e) {
       lastErr = e;
@@ -1311,9 +1346,13 @@ function sendLeaveBeacon() {
 }
 
 function handleAuthError() {
-  toast('⚠️ セッションが無効です。再度ログインしてください。');
+  if (!myToken) return; // 二重表示を防ぐ
+  toast('⚠️ ログインの有効期限が切れました。もう一度ログインしてください。');
   stopPolling();
+  stopAllVoices();
+  if (typeof stopHandsFree === 'function') stopHandsFree(true);
   myToken = null; myId = null;
+  clearSession();
   showAuthView('login');
   document.getElementById('modal-wrap').style.display = 'flex';
 }
@@ -2321,6 +2360,7 @@ const chatMicBtn = document.getElementById('chat-mic');
 
 async function toggleVoiceInput() {
   unlockAudio();
+  if (hf) stopHandsFree(true); // 🎤を押したらハンズフリーは止める
   if (mediaRecorder && mediaRecorder.state === 'recording') {
     mediaRecorder.stop();
     return;
@@ -2365,13 +2405,22 @@ function blobToBase64(blob) {
   });
 }
 
-async function transcribeAndFill(blob, mimeType) {
-  toast('⏳ 文字起こし中...');
+async function transcribeAndFill(blob, mimeType, opt = {}) {
+  const handsFree = !!opt.handsFree;
+  if (!handsFree) toast('⏳ 文字起こし中...');
   try {
     const audioBase64 = await blobToBase64(blob);
     const res = await apiPost({ action:'transcribeAudio', audioBase64, mimeType });
-    if (!res.ok) { toast('⚠️ ' + (res.error ?? '文字起こしに失敗しました')); return; }
-    if (autoSend) {
+    if (!res.ok) {
+      // ハンズフリーでは聞き取れなかった物音などは静かに無視
+      if (handsFree) console.info('transcribe:', res.error);
+      else toast('⚠️ ' + (res.error ?? '文字起こしに失敗しました'));
+      return;
+    }
+    const text = String(res.text || '').trim();
+    if (!text) { if (!handsFree) toast('⚠️ 聞き取れませんでした'); return; }
+    res.text = text;
+    if (autoSend || handsFree) {
       document.getElementById('chat-input').value = '';
       sendComment(res.text);
       toast('🗣 「' + res.text + '」');
@@ -2381,7 +2430,7 @@ async function transcribeAndFill(blob, mimeType) {
     document.getElementById('chat-input').focus();
     toast('✅ 文字起こし完了。内容を確認して送信してください');
   } catch(e) {
-    toast('⚠️ 文字起こしに失敗しました');
+    if (!handsFree) toast('⚠️ 文字起こしに失敗しました');
     console.error(e);
   }
 }
@@ -2637,6 +2686,182 @@ document.getElementById('voice-save').addEventListener('click', async () => {
 });
 
 // ============================================================
+// ハンズフリー会話（👂ボタン）
+//   マイクの音量を見て、話し始めたら自動で録音 → 黙ったら自動で停止
+//   → 文字起こし → 自動送信 → 自分の声で読み上げ
+//   ・誰かの声が再生中は聞き取りを休む（スピーカーの音を拾わないため）
+// ============================================================
+const HF = {
+  START_RATIO:   3.0,   // 周りの雑音の何倍の大きさで「話し始め」とみなすか
+  MIN_LEVEL:     0.015, // これより小さい音は無視
+  SILENCE_MS:    1200,  // この時間黙ったら話し終わり
+  MIN_SPEECH_MS: 450,   // これより短い音（咳・物音）は送らない
+  MAX_SPEECH_MS: 15000, // 1回の最大録音時間
+  AFTER_PLAY_MS: 500,   // 声の再生が終わってから聞き取りを再開するまで
+};
+const chatHfBtn = document.getElementById('chat-hf');
+let hf = null; // { stream, src, analyser, buf, tid, state, noise, rec, chunks, mime, speechMs, lastVoiceAt, startAt, mutedUntil }
+
+function setHfState(state) {
+  if (!hf) {
+    chatHfBtn.className = '';
+    chatHfBtn.textContent = '👂';
+    chatHfBtn.title = 'ハンズフリー会話：OFF（タップでON）';
+    return;
+  }
+  hf.state = state;
+  chatHfBtn.className = 'on ' + state;
+  chatHfBtn.textContent = state === 'recording' ? '🔴' : state === 'busy' ? '⏳' : state === 'muted' ? '🔇' : '👂';
+  chatHfBtn.title = {
+    listening: 'ハンズフリー：聞いています（話しかけてください）',
+    recording: 'ハンズフリー：録音中',
+    busy:      'ハンズフリー：送信中',
+    muted:     'ハンズフリー：相手の声を再生中',
+  }[state] || '';
+}
+
+async function startHandsFree() {
+  if (hf) return;
+  if (!window.MediaRecorder) { toast('⚠️ このブラウザは録音に対応していません'); return; }
+  if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+  unlockAudio();
+  if (!audioCtx) { toast('⚠️ 音声を利用できません'); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (e) {
+    toast('⚠️ マイクを利用できません');
+    console.error(e);
+    return;
+  }
+  const src = audioCtx.createMediaStreamSource(stream);
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  src.connect(analyser); // スピーカーには繋がない
+  const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+             : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
+             : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '';
+  hf = {
+    stream, src, analyser, buf: new Float32Array(analyser.fftSize), mime,
+    tid: null, state: 'listening', noise: 0.01, rec: null, chunks: [],
+    speechMs: 0, lastVoiceAt: 0, startAt: 0, mutedUntil: 0, lastTick: performance.now(),
+  };
+  hf.tid = setInterval(hfTick, 50);
+  setHfState('listening');
+  toast('👂 ハンズフリーON：話しかけると自動で送信します');
+}
+
+function stopHandsFree(silent) {
+  if (!hf) return;
+  clearInterval(hf.tid);
+  if (hf.rec && hf.rec.state === 'recording') { hf.rec.onstop = null; hf.rec.stop(); }
+  try { hf.src.disconnect(); } catch (e) {}
+  hf.stream.getTracks().forEach(t => t.stop());
+  hf = null;
+  setHfState();
+  if (!silent) toast('👂 ハンズフリーOFF');
+}
+
+function hfLevel() {
+  hf.analyser.getFloatTimeDomainData(hf.buf);
+  let sum = 0;
+  for (let i = 0; i < hf.buf.length; i++) sum += hf.buf[i] * hf.buf[i];
+  return Math.sqrt(sum / hf.buf.length);
+}
+
+function hfTick() {
+  if (!hf) return;
+  const now = performance.now();
+  const dt = now - hf.lastTick;
+  hf.lastTick = now;
+  const level = hfLevel();
+
+  // 声の再生中は聞き取りを休む
+  if (voicePlaying || voiceQueue.length) hf.mutedUntil = now + HF.AFTER_PLAY_MS;
+  if (hf.state === 'busy') return;
+  if (now < hf.mutedUntil) {
+    if (hf.state === 'recording') hfFinish(true); // 録音中に再生が始まったら破棄
+    if (hf.state !== 'muted') setHfState('muted');
+    return;
+  }
+  if (hf.state === 'muted') setHfState('listening');
+
+  const threshold = Math.max(HF.MIN_LEVEL, hf.noise * HF.START_RATIO);
+  const loud = level > threshold;
+
+  if (hf.state === 'listening') {
+    if (loud) { hfBegin(now); return; }
+    // 静かなときだけ周りの雑音レベルをゆっくり学習
+    hf.noise = hf.noise * 0.97 + level * 0.03;
+    return;
+  }
+
+  if (hf.state === 'recording') {
+    if (loud) { hf.lastVoiceAt = now; hf.speechMs += dt; }
+    if (now - hf.lastVoiceAt > HF.SILENCE_MS) hfFinish(false);
+    else if (now - hf.startAt > HF.MAX_SPEECH_MS) hfFinish(false);
+  }
+}
+
+function hfBegin(now) {
+  hf.chunks = [];
+  hf.speechMs = 0;
+  hf.startAt = now;
+  hf.lastVoiceAt = now;
+  try {
+    hf.rec = hf.mime ? new MediaRecorder(hf.stream, { mimeType: hf.mime }) : new MediaRecorder(hf.stream);
+  } catch (e) {
+    console.error(e);
+    stopHandsFree(true);
+    toast('⚠️ 録音を開始できませんでした');
+    return;
+  }
+  const rec = hf.rec;
+  rec.ondataavailable = (e) => { if (hf && e.data.size > 0) hf.chunks.push(e.data); };
+  rec.start();
+  setHfState('recording');
+}
+
+// discard=true のときは送らずに捨てる
+function hfFinish(discard) {
+  const rec = hf.rec;
+  if (!rec) { setHfState('listening'); return; }
+  hf.rec = null;
+  const tooShort = hf.speechMs < HF.MIN_SPEECH_MS;
+  if (discard || tooShort) {
+    rec.onstop = null;
+    if (rec.state === 'recording') rec.stop();
+    setHfState(discard ? 'muted' : 'listening');
+    return;
+  }
+  setHfState('busy');
+  rec.onstop = async () => {
+    if (!hf) return;
+    const type = rec.mimeType || hf.mime || 'audio/webm';
+    const blob = new Blob(hf.chunks, { type });
+    hf.chunks = [];
+    try {
+      if (blob.size > 0) await transcribeAndFill(blob, type.split(';')[0], { handsFree: true });
+    } finally {
+      if (hf) { hf.mutedUntil = performance.now() + HF.AFTER_PLAY_MS; setHfState('listening'); }
+    }
+  };
+  if (rec.state === 'recording') rec.stop();
+}
+
+chatHfBtn.addEventListener('click', () => {
+  if (hf) stopHandsFree();
+  else startHandsFree();
+});
+// 画面を離れたら止める（裏で録音し続けないように）
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && hf) stopHandsFree(true);
+});
+setHfState();
+
+// ============================================================
 // プレイヤーリスト更新 (デスクトップ & モバイル共通)
 // ============================================================
 function buildPlayerRow(name, color, dist, isMe) {
@@ -2694,6 +2919,7 @@ function doLeave() {
   for (const k of Object.keys(anim)) delete anim[k];
   myComment = ''; myCommentAt = 0; myExpr = 'normal';
   stopAllVoices();
+  stopHandsFree(true);
   currentRoom = null;
   clearInterval(roomLinkPollTid);
   roomLinkPollTid = null;
@@ -2776,6 +3002,7 @@ document.getElementById('login-btn').addEventListener('click', async () => {
       myId = res.userId; myToken = res.token;
       myName = res.nickname; myColor = res.avatarColor || AVATAR_COLORS[0];
       myVoice = res.voice || '';
+      saveSession();
       setAuthMsg('login-msg','');
       document.getElementById('login-password').value = '';
       if (res.mustChangePassword) {
@@ -2847,6 +3074,7 @@ document.getElementById('nick-edit-save').addEventListener('click', async () => 
 });
 document.getElementById('logout-link').addEventListener('click', () => {
   myId = null; myToken = null; myVoice = '';
+  clearSession();
   document.getElementById('login-password').value = '';
   showAuthView('login');
 });
@@ -2879,6 +3107,7 @@ document.getElementById('enter-btn').addEventListener('click', async () => {
       return;
     }
     myId=res.userId; myToken=res.token; myName=res.name;
+    saveSession();
     if (typeof res.voice === 'string') myVoice = res.voice;
 
     const sp = randomFloor();
@@ -2906,6 +3135,32 @@ document.getElementById('enter-btn').addEventListener('click', async () => {
 
 buildColorPicker();
 initMapSelect();
+
+// ページを開いたとき、保存してあるログインを復元
+(async function restoreSession() {
+  const saved = loadSession();
+  if (!saved) return;
+  myToken = saved.token; myId = saved.userId;
+  setAuthMsg('login-msg', 'ログイン状態を確認中...', 'ok');
+  try {
+    const res = await apiPost({ action:'session' });
+    if (!res.ok) {
+      setAuthMsg('login-msg', '');
+      if (res.code === 401) { myToken = null; myId = null; clearSession(); }
+      return;
+    }
+    myName = res.nickname; myColor = res.avatarColor || AVATAR_COLORS[0];
+    myVoice = res.voice || '';
+    setAuthMsg('login-msg', '');
+    document.querySelectorAll('.color-sw').forEach((d, i) => d.classList.toggle('sel', AVATAR_COLORS[i] === myColor));
+    if (res.mustChangePassword) showAuthView('changepw');
+    else enterProfileView();
+  } catch (e) {
+    // 通信失敗のときはトークンを残しておき、ログイン画面のまま
+    console.warn('restoreSession', e);
+    setAuthMsg('login-msg', '');
+  }
+})();
 </script>
 </body>
 </html>

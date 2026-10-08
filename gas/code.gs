@@ -6,7 +6,8 @@
 const CFG = {
   MAX_USERS:          20,
   SESSION_TIMEOUT_MS: 60000,
-  TOKEN_TTL_MS:       86400000,
+  TOKEN_TTL_MS:       30 * 86400000, // ログインの有効期限（最後に使ってから30日）
+  TOKEN_RENEW_MS:     3600000,       // 発行から1時間たったトークンは自動で新しくする
   RATE_LIMIT_MS:      800,
   MAX_NAME_LEN:       16,
   MAX_COMMENT_LEN:    60,
@@ -105,6 +106,9 @@ function issueToken(userId) {
   return Utilities.base64EncodeWebSafe(payload + ':' + sig);
 }
 
+// 使用中に自動更新したトークン（レスポンスに newToken として付ける）
+let RENEWED_TOKEN = null;
+
 function verifyToken(token) {
   if (!token || typeof token !== 'string') return null;
   let decoded;
@@ -121,6 +125,10 @@ function verifyToken(token) {
   const secret   = PropertiesService.getScriptProperties().getProperty(CFG.SECRET_KEY);
   const expected = hmacSign(secret, userId + ':' + ts);
   if (!constantTimeEqual(sig, expected)) return null;
+  // 古くなってきたら新しいトークンを発行（使い続けている限りログインが切れない）
+  if (now - issuedAt > CFG.TOKEN_RENEW_MS) {
+    try { RENEWED_TOKEN = issueToken(userId); } catch (e) {}
+  }
   return userId;
 }
 
@@ -220,6 +228,7 @@ function getMembersSheet() {
 }
 
 function jsonResponse(data) {
+  if (RENEWED_TOKEN && data && typeof data === 'object' && !data.token) data.newToken = RENEWED_TOKEN;
   return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -231,6 +240,7 @@ function errorResponse(msg, code) {
 // GET ルーター
 // ============================================================
 function doGet(e) {
+  RENEWED_TOKEN = null;
   const p      = e.parameter;
   const action = p.action;
   try {
@@ -252,6 +262,7 @@ function doGet(e) {
 // POST ルーター
 // ============================================================
 function doPost(e) {
+  RENEWED_TOKEN = null;
   let body;
   try { body = JSON.parse(e.postData.contents); }
   catch (err) { return errorResponse('JSONが不正です'); }
@@ -267,6 +278,9 @@ function doPost(e) {
 
     const userId = verifyToken(body.token);
     if (!userId) return errorResponse('認証失敗', 401);
+
+    // 保存しておいたログインの確認（ページを開き直したとき）
+    if (action === 'session')     return handleSession(userId);
 
     // 読み取り系（ポーリング）はレート制限の対象外
     if (action === 'getUsers')    return jsonResponse(getActiveUsers(userId));
@@ -656,7 +670,7 @@ function handleTranscribeAudio(userId, body) {
     contents: [{
       parts: [
         { inline_data: { mime_type: mimeType, data: audioBase64 } },
-        { text: 'この音声の内容を日本語で文字起こししてください。文字起こしした内容だけを、説明や記号を付けずに出力してください。60文字以内に短くまとめてください。' },
+        { text: 'この音声の内容を日本語で文字起こししてください。文字起こしした内容だけを、説明や記号を付けずに出力してください。60文字以内に短くまとめてください。人の話し声が入っていない（物音・雑音・無音だけ）の場合は、NONE とだけ出力してください。' },
       ],
     }],
   };
@@ -675,8 +689,9 @@ function handleTranscribeAudio(userId, body) {
     }
     const data = JSON.parse(res.getContentText());
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text || !text.trim()) return errorResponse('文字起こし結果が空でした');
-    return jsonResponse({ ok: true, text: text.trim().slice(0, CFG.MAX_COMMENT_LEN) });
+    const cleaned = String(text || '').trim().replace(/^[「『"]+|[」』"]+$/g, '').trim();
+    if (!cleaned || /^NONE\.?$/i.test(cleaned)) return errorResponse('話し声を聞き取れませんでした');
+    return jsonResponse({ ok: true, text: cleaned.slice(0, CFG.MAX_COMMENT_LEN) });
   } catch (err) {
     console.error('transcribeAudio error:', err);
     return errorResponse('文字起こし中にエラーが発生しました');
@@ -957,6 +972,20 @@ function handleLogin(body) {
   const token = issueToken(member.id);
   return jsonResponse({
     ok: true, token, userId: member.id,
+    nickname: member.nickname, avatarColor: member.avatarColor,
+    mustChangePassword: member.mustChangePassword,
+    voice: getUserVoice(member.id),
+  });
+}
+
+// ============================================================
+// ACTION: session（保存済みトークンでログイン状態を復元）
+// ============================================================
+function handleSession(userId) {
+  const member = findMemberById(userId);
+  if (!member) return errorResponse('アカウントが見つかりません', 401);
+  return jsonResponse({
+    ok: true, userId: member.id,
     nickname: member.nickname, avatarColor: member.avatarColor,
     mustChangePassword: member.mustChangePassword,
     voice: getUserVoice(member.id),
